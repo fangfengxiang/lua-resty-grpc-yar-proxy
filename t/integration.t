@@ -327,8 +327,9 @@ connect_timeout=1000
         content_by_lua_block {
             local codec = require("resty.grpc_yar_proxy.codec")
 
-            -- 发送无效 protobuf payload（非零随机字节），pb.decode 会失败
-            local bad_payload = string.char(0xFF, 0xFF, 0xFF, 0xFF)
+            -- 发送无效 protobuf payload：field 1 (0x08) + 不完整 varint (0xFF 无终止字节)
+            -- pb.decode 读取 field tag 后尝试读 varint 值，但 0xFF 有 continuation bit 却无后续字节
+            local bad_payload = string.char(0x08, 0xFF)
             local frame = codec.encode_frame(bad_payload)
 
             local res = ngx.location.capture("/Bad/Ping", {
