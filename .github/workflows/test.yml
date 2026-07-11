@@ -89,8 +89,8 @@ jobs:
           prove -v -r t 2>&1 | tee /tmp/test-output.txt
           TEST_EXIT=${PIPESTATUS[0]}
           if [ $TEST_EXIT -ne 0 ]; then
-            echo "=== TEST FAILED, showing first 30 lines of output ==="
-            head -30 /tmp/test-output.txt | while IFS= read -r line; do
+            echo "=== TEST FAILED, showing last 50 lines of output ==="
+            tail -50 /tmp/test-output.txt | while IFS= read -r line; do
               echo "::error::$line"
             done
           fi

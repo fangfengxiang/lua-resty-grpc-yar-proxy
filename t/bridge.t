@@ -4,7 +4,7 @@ env_to_nginx("LUA_PATH");
 env_to_nginx("LUA_CPATH");
 
 repeat_each(2);
-plan tests => repeat_each() * 12;
+plan tests => repeat_each() * 3 * 12;
 
 run_tests();
 
