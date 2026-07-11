@@ -297,7 +297,7 @@ connect_timeout=1000
         local f = io.open("/tmp/test_bad.pb", "wb")
         f:write(protoc.new():compile([[
             syntax = "proto3";
-            message Bad_PingRequest {}
+            message Bad_PingRequest { int32 x = 1; }
             message Bad_PingResponse { string result = 1; }
         ]]))
         f:close()
