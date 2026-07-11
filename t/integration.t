@@ -14,13 +14,13 @@ __DATA__
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_calc.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Calc_AddRequest { int32 a = 1; int32 b = 2; }
             message Calc_AddResponse { int32 result = 1; }
-        ]])
-        parser:compile("/tmp/test_calc.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -87,13 +87,13 @@ result=7
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_user.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message User_GetRequest { int32 id = 1; }
             message User_GetResponse { string name = 1; int32 age = 2; }
-        ]])
-        parser:compile("/tmp/test_user.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -160,13 +160,13 @@ age=18
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_fail.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Fail_PingRequest {}
             message Fail_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_fail.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -218,13 +218,13 @@ grpc_message=transport: connection refused
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_opt.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Opt_PingRequest {}
             message Opt_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_opt.pb")
+        ]]))
+        f:close()
 
         -- 记录 per-service options 是否被正确传入
         _G.test_opts = nil
@@ -291,13 +291,13 @@ connect_timeout=1000
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_bad.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Bad_PingRequest {}
             message Bad_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_bad.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -350,15 +350,15 @@ grpc_status=13
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_dedup.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message SvcA_PingRequest {}
             message SvcA_PingResponse { string result = 1; }
             message SvcB_PingRequest {}
             message SvcB_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_dedup.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)

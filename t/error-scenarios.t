@@ -14,13 +14,13 @@ __DATA__
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_err.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Echo_PingRequest {}
             message Echo_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_err.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -70,13 +70,13 @@ grpc_message=service not found: Unknown
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_err2.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Echo_PingRequest {}
             message Echo_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_err2.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -125,13 +125,13 @@ grpc_status=13
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_err3.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Echo_PingRequest {}
             message Echo_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_err3.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -182,13 +182,13 @@ grpc_message=compression not supported
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_err4.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Echo_PingRequest {}
             message Echo_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_err4.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -258,13 +258,13 @@ grpc_yar_proxy: service 'Bad' is missing or has invalid 'proto' field
     lua_package_path ";;";
     init_by_lua_block {
         local protoc = require("protoc")
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_nourl.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message NoUrl_PingRequest {}
             message NoUrl_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_nourl.pb")
+        ]]))
+        f:close()
 
         local ok, err = pcall(require("resty.grpc_yar_proxy").setup, {
             services = {
@@ -293,13 +293,13 @@ grpc_yar_proxy: service 'NoUrl' is missing or has invalid 'url' field
     lua_package_path ";;";
     init_by_lua_block {
         local protoc = require("protoc")
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_badopt.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message BadOpt_PingRequest {}
             message BadOpt_PingResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_badopt.pb")
+        ]]))
+        f:close()
 
         local ok, err = pcall(require("resty.grpc_yar_proxy").setup, {
             services = {

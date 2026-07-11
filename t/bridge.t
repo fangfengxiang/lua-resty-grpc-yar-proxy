@@ -100,7 +100,7 @@ a
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_AddRequest { int32 a = 1; int32 b = 2; }
             ]])
@@ -129,7 +129,7 @@ count=2
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_GetRequest { int32 id = 1; }
             ]])
@@ -156,7 +156,7 @@ count=1
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_EmptyRequest {}
             ]])
@@ -180,7 +180,7 @@ count=0
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_AddResponse { int32 result = 1; }
             ]])
@@ -206,7 +206,7 @@ type=table
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_GetUserResponse { string name = 1; int32 age = 2; }
             ]])
@@ -233,7 +233,7 @@ age=18
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_EmptyResponse {}
             ]])
@@ -259,7 +259,7 @@ count=0
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_ListResponse { repeated string items = 1; }
             ]])
@@ -290,7 +290,7 @@ items[3]=c
         content_by_lua_block {
             local protoc = require("protoc")
             require("pb")
-            protoc.new():parse([[
+            protoc.new():load([[
                 syntax = "proto3";
                 message Test_NonRepResponse { int32 count = 1; repeated string names = 2; }
             ]])

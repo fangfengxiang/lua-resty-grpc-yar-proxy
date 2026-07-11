@@ -14,13 +14,13 @@ __DATA__
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_stream.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Str_SendRequest { string data = 1; }
             message Str_SendResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_stream.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
@@ -76,13 +76,13 @@ grpc_message=streaming mode not supported
         local protoc = require("protoc")
         local Yar = require("yar")
 
-        local parser = protoc.new()
-        parser:parse([[
+        local f = io.open("/tmp/test_stream2.pb", "wb")
+        f:write(protoc.new():compile([[
             syntax = "proto3";
             message Str_SendRequest { string data = 1; }
             message Str_SendResponse { string result = 1; }
-        ]])
-        parser:compile("/tmp/test_stream2.pb")
+        ]]))
+        f:close()
 
         local orig_new = Yar.Client.new
         Yar.Client.new = function(uri)
