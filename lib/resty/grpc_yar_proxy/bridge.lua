@@ -61,8 +61,8 @@ function _M.extract_params(decoded, request_type)
     local sorted_names = _sorted_fields_cache[request_type]
     if not sorted_names then
         local fields = {}
-        for name, field in pb.fields(request_type) do
-            table.insert(fields, { name = name, number = field.number })
+        for name, number in pb.fields(request_type) do
+            table.insert(fields, { name = name, number = number })
         end
         table.sort(fields, function(a, b) return a.number < b.number end)
         sorted_names = {}
@@ -105,11 +105,11 @@ function _M.map_response(retval, response_type)
         if not cached then
             local f1_name
             local first_rep
-            for name, field in pb.fields(response_type) do
-                if field.number == 1 then
+            for name, number, _, _, label in pb.fields(response_type) do
+                if number == 1 then
                     f1_name = name
                 end
-                if not first_rep and field.label == "repeated" then
+                if not first_rep and label == "repeated" then
                     first_rep = name
                 end
             end
