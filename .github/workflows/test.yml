@@ -63,8 +63,28 @@ jobs:
       - name: Lint
         run: luacheck lib/
 
+      - name: Debug info
+        run: |
+          echo "=== PATH ==="
+          echo "$PATH"
+          echo "=== LUA_PATH ==="
+          echo "$LUA_PATH"
+          echo "=== LUA_CPATH ==="
+          echo "$LUA_CPATH"
+          echo "=== which nginx ==="
+          which nginx || echo "nginx NOT FOUND"
+          nginx -V 2>&1 | head -5
+          echo "=== which prove ==="
+          which prove || echo "prove NOT FOUND"
+          echo "=== perl -V ==="
+          perl -V 2>&1 | head -10
+          echo "=== Test::Nginx load check ==="
+          perl -e 'use Test::Nginx::Socket::Lua; print "Test::Nginx OK\n"' 2>&1 || echo "Test::Nginx LOAD FAILED"
+          echo "=== ls t/ ==="
+          ls -la t/
+
       - name: Test
-        run: prove -r t
+        run: prove -v -r t
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
           LUA_CPATH: ${{ env.LUA_CPATH }}
