@@ -98,25 +98,28 @@ function _M.map_response(retval, response_type)
         return { result = retval }
     end
 
-    -- 索引数组（retval[1] ~= nil）→ 优先用 field 1，其次用第一个 repeated 字段
+    -- 索引数组（retval[1] ~= nil）→ 优先用 field 1（仅当 repeated），其次用第一个 repeated 字段
     if retval[1] ~= nil then
         -- 从缓存获取 field 1 名和首个 repeated 字段名
         local cached = _idx_fields_cache[response_type]
         if not cached then
             local f1_name
+            local f1_repeated
             local first_rep
             for name, number, _, _, label in pb.fields(response_type) do
                 if number == 1 then
                     f1_name = name
+                    f1_repeated = (label == "repeated")
                 end
                 if not first_rep and label == "repeated" then
                     first_rep = name
                 end
             end
-            cached = { field1 = f1_name, repeated = first_rep }
+            -- field 1 仅当为 repeated 时才优先使用，否则用首个 repeated 字段
+            cached = { key = (f1_repeated and f1_name) or first_rep }
             _idx_fields_cache[response_type] = cached
         end
-        local key = cached.field1 or cached.repeated
+        local key = cached.key
         if key then
             return { [key] = retval }
         end
