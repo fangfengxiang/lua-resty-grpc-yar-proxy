@@ -71,7 +71,7 @@ function _M.setup(opts)
     -- 1. 解析 services：加载 .pb 文件 + 存储 endpoint 配置
     local services = opts.services
     if type(services) ~= "table" or next(services) == nil then
-        error("grpc_yar_proxy: services is required and must be a non-empty table")
+        error("grpc_yar_proxy: services is required and must be a non-empty table", 0)
     end
 
     local loaded_files = {}  -- 去重：同一 .pb 文件只加载一次
@@ -79,18 +79,18 @@ function _M.setup(opts)
     _services = {}
     for service_name, svc_config in pairs(services) do
         if type(svc_config) ~= "table" then
-            error("grpc_yar_proxy: service config for '" .. service_name .. "' must be a table")
+            error("grpc_yar_proxy: service config for '" .. service_name .. "' must be a table", 0)
         end
 
         -- 加载 .pb 文件（去重）
         local proto_file = svc_config.proto
         if not proto_file or type(proto_file) ~= "string" then
-            error("grpc_yar_proxy: service '" .. service_name .. "' is missing or has invalid 'proto' field")
+            error("grpc_yar_proxy: service '" .. service_name .. "' is missing or has invalid 'proto' field", 0)
         end
         if not loaded_files[proto_file] then
             local ok, err = load_pb_file(proto_file)
             if not ok then
-                error("grpc_yar_proxy: " .. err)
+                error("grpc_yar_proxy: " .. err, 0)
             end
             loaded_files[proto_file] = true
         end
@@ -98,13 +98,13 @@ function _M.setup(opts)
         -- 校验 url
         local url = svc_config.url
         if not url or type(url) ~= "string" then
-            error("grpc_yar_proxy: service '" .. service_name .. "' is missing or has invalid 'url' field")
+            error("grpc_yar_proxy: service '" .. service_name .. "' is missing or has invalid 'url' field", 0)
         end
 
         -- 校验 options（可选，但若提供则必须为 table）
         local svc_opts = svc_config.options
         if svc_opts ~= nil and type(svc_opts) ~= "table" then
-            error("grpc_yar_proxy: service '" .. service_name .. "' options must be a table")
+            error("grpc_yar_proxy: service '" .. service_name .. "' options must be a table", 0)
         end
 
         _services[service_name] = {
