@@ -63,45 +63,8 @@ jobs:
       - name: Lint
         run: luacheck lib/
 
-      - name: Debug info
-        run: |
-          echo "=== PATH ==="
-          echo "$PATH"
-          echo "=== LUA_PATH ==="
-          echo "$LUA_PATH"
-          echo "=== LUA_CPATH ==="
-          echo "$LUA_CPATH"
-          echo "=== which nginx ==="
-          which nginx || echo "nginx NOT FOUND"
-          nginx -V 2>&1 | head -5
-          echo "=== which prove ==="
-          which prove || echo "prove NOT FOUND"
-          echo "=== perl -V ==="
-          perl -V 2>&1 | head -10
-          echo "=== Test::Nginx load check ==="
-          perl -e 'use Test::Nginx::Socket::Lua; print "Test::Nginx OK\n"' 2>&1 || echo "Test::Nginx LOAD FAILED"
-          echo "=== ls t/ ==="
-          ls -la t/
-
       - name: Test
-        run: |
-          set +e
-          prove -v -r t 2>&1 | tee /tmp/test-output.txt
-          TEST_EXIT=${PIPESTATUS[0]}
-          if [ $TEST_EXIT -ne 0 ]; then
-            echo "=== TEST FAILED ==="
-            echo "--- Failing test lines (not ok / Failed / Dubious / Cannot) ---"
-            grep -E 'not ok|Failed|Dubious|Cannot|syntax error|plan.*tests.*ran' /tmp/test-output.txt \
-              | head -80 \
-              | while IFS= read -r line; do
-                echo "::error::$line"
-              done
-            echo "--- Last 30 lines of output ---"
-            tail -30 /tmp/test-output.txt | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-          fi
-          exit $TEST_EXIT
+        run: prove -r t
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
           LUA_CPATH: ${{ env.LUA_CPATH }}
