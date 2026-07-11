@@ -1,5 +1,8 @@
 use Test::Nginx::Socket::Lua;
 
+env_to_nginx("LUA_PATH");
+env_to_nginx("LUA_CPATH");
+
 repeat_each(2);
 plan tests => repeat_each() * 6;
 
