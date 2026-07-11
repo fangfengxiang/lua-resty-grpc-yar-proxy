@@ -84,7 +84,17 @@ jobs:
           ls -la t/
 
       - name: Test
-        run: prove -v -r t
+        run: |
+          set +e
+          prove -v -r t 2>&1 | tee /tmp/test-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
+          if [ $TEST_EXIT -ne 0 ]; then
+            echo "=== TEST FAILED, showing first 30 lines of output ==="
+            head -30 /tmp/test-output.txt | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          exit $TEST_EXIT
         env:
           LUA_PATH: ${{ env.LUA_PATH }}
           LUA_CPATH: ${{ env.LUA_CPATH }}
