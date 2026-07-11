@@ -46,7 +46,6 @@ jobs:
             -I$OPENRESTY_PREFIX/luajit/include/luajit-2.1 \
             -o pb.so pb.c
           sudo cp pb.so $OPENRESTY_PREFIX/luajit/lib/lua/5.1/pb.so
-          sudo cp pb.lua $OPENRESTY_PREFIX/luajit/share/lua/5.1/pb.lua
           sudo cp protoc.lua $OPENRESTY_PREFIX/luajit/share/lua/5.1/protoc.lua
 
       - name: Install test-nginx
