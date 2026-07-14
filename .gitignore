@@ -1,0 +1,24 @@
+# Compiled protobuf test files
+.claude
+.vscode
+.codebuddy
+*.pb
+
+# Test artifacts
+t/servroot/
+t/log/
+
+# OPM build artifacts
+*.opm
+opm-out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+
+openspec
