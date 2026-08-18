@@ -4,7 +4,7 @@ env_to_nginx("LUA_PATH");
 env_to_nginx("LUA_CPATH");
 
 repeat_each(2);
-plan tests => repeat_each() * 3 * 6;
+plan tests => repeat_each() * 3 * 13;
 
 run_tests();
 
@@ -110,7 +110,158 @@ msg=unknown error
 --- no_error_log
 [error]
 
-=== TEST 6: gRPC status code constants
+=== TEST 6: map_yar_error — structured Error TRANSPORT → UNAVAILABLE (14)
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local Yar = require("yar")
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = Yar.Error.new(Yar.Error.TRANSPORT, "connection refused")
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=14
+msg=connection refused
+--- no_error_log
+[error]
+
+=== TEST 7: map_yar_error — structured Error TIMEOUT → DEADLINE_EXCEEDED (4)
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local Yar = require("yar")
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = Yar.Error.new(Yar.Error.TIMEOUT, "read timeout")
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=4
+msg=read timeout
+--- no_error_log
+[error]
+
+=== TEST 8: map_yar_error — structured Error NOT_FOUND → NOT_FOUND (5)
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local Yar = require("yar")
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = Yar.Error.new(Yar.Error.NOT_FOUND, "method not found")
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=5
+msg=method not found
+--- no_error_log
+[error]
+
+=== TEST 9: map_yar_error — structured Error EXCEPTION → INTERNAL (13)
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local Yar = require("yar")
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = Yar.Error.new(Yar.Error.EXCEPTION, "server exception")
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=13
+msg=server exception
+--- no_error_log
+[error]
+
+=== TEST 10: map_yar_error — structured Error PROTOCOL → INTERNAL (13)
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local Yar = require("yar")
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = Yar.Error.new(Yar.Error.PROTOCOL, "invalid magic number")
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=13
+msg=invalid magic number
+--- no_error_log
+[error]
+
+=== TEST 11: map_yar_error — empty string → INTERNAL (13) + "unknown error"
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local status, msg = errors.map_yar_error("")
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=13
+msg=unknown error
+--- no_error_log
+[error]
+
+=== TEST 12: map_yar_error — table with unknown code → INTERNAL (13) fallback
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local errors = require("resty.grpc_yar_proxy.errors")
+            local err = { code = "UNKNOWN_CODE", message = "something weird" }
+            local status, msg = errors.map_yar_error(err)
+            ngx.say("status=" .. status)
+            ngx.say("msg=" .. msg)
+        }
+    }
+--- request
+GET /t
+--- response_body
+status=13
+msg=something weird
+--- no_error_log
+[error]
+
+=== TEST 13: gRPC status code constants
 --- http_config
     lua_package_path ";;";
 --- config
@@ -118,21 +269,25 @@ msg=unknown error
         content_by_lua_block {
             local errors = require("resty.grpc_yar_proxy.errors")
             ngx.say("OK=" .. errors.OK)
-            ngx.say("NOT_FOUND=" .. errors.NOT_FOUND)
-            ngx.say("INTERNAL=" .. errors.INTERNAL)
-            ngx.say("UNIMPLEMENTED=" .. errors.UNIMPLEMENTED)
-            ngx.say("UNAVAILABLE=" .. errors.UNAVAILABLE)
+            ngx.say("INVALID_ARGUMENT=" .. errors.INVALID_ARGUMENT)
             ngx.say("DEADLINE_EXCEEDED=" .. errors.DEADLINE_EXCEEDED)
+            ngx.say("NOT_FOUND=" .. errors.NOT_FOUND)
+            ngx.say("PERMISSION_DENIED=" .. errors.PERMISSION_DENIED)
+            ngx.say("UNIMPLEMENTED=" .. errors.UNIMPLEMENTED)
+            ngx.say("INTERNAL=" .. errors.INTERNAL)
+            ngx.say("UNAVAILABLE=" .. errors.UNAVAILABLE)
         }
     }
 --- request
 GET /t
 --- response_body
 OK=0
-NOT_FOUND=5
-INTERNAL=13
-UNIMPLEMENTED=12
-UNAVAILABLE=14
+INVALID_ARGUMENT=3
 DEADLINE_EXCEEDED=4
+NOT_FOUND=5
+PERMISSION_DENIED=7
+UNIMPLEMENTED=12
+INTERNAL=13
+UNAVAILABLE=14
 --- no_error_log
 [error]

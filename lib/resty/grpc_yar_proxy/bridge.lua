@@ -4,6 +4,8 @@
 local pb      = require("pb")
 local Yar     = require("yar")
 local errors  = require("resty.grpc_yar_proxy.errors")
+local cb      = require("resty.grpc_yar_proxy.circuit_breaker")
+local observability = require("resty.grpc_yar_proxy.observability")
 
 local _M = {}
 
@@ -13,12 +15,91 @@ local _sorted_fields_cache = {}
 local _idx_fields_cache = {}
 -- 模块级缓存：类型名字符串拼接结果按 service/method 缓存
 local _type_cache = {}
+-- 模块级缓存：YAR Client 实例（service name → Client），persistent 模式跨请求复用
+local _client_cache = {}
 
 --- 清空所有模块级缓存（供 init.setup 重新加载时调用）
 function _M.clear_cache()
     _sorted_fields_cache = {}
     _idx_fields_cache = {}
     _type_cache = {}
+    _client_cache = {}
+end
+
+--- 获取或创建 YAR Client 实例（按 service 名缓存，persistent 模式）
+-- @param service string gRPC Service 名（用作缓存 key）
+-- @param service_config table { url=string, options=table|nil }
+-- @return client table YAR Client 实例
+-- @return err string|nil 创建失败时的错误信息
+local function get_client(service, service_config)
+    local cached = _client_cache[service]
+    if cached then
+        return cached
+    end
+
+    local ok_c, client = pcall(Yar.Client.new, service_config.url)
+    if not ok_c then
+        return nil, "failed to create YAR client: " .. tostring(client)
+    end
+
+    -- 浅拷贝用户选项（不修改 _svc_cache 中的缓存对象），以便追加 persistent 默认值
+    local opts = {}
+    if service_config.options then
+        for k, v in pairs(service_config.options) do
+            opts[k] = v
+        end
+    end
+    if opts.persistent == nil then
+        opts.persistent = true
+    end
+
+    -- 注入 hooks：收集 YAR 调用元数据到 ngx.ctx（延迟、错误分类）
+    -- 同时集成熔断器记录和可观测性 hooks
+    -- hooks 签名：on_request(method, params) / on_response(method, retval, err_obj)
+    -- lua-yar 的 run_hook() 内部 pcall 保护，hook 异常不影响主流程
+    -- hooks 引用 ngx.ctx 全局 table，per-request 自动隔离，persistent 复用安全
+    local url = service_config.url
+    local obs_hooks = observability.compose(
+        observability.trace_middleware(),
+        observability.access_logger(),
+        observability.metrics_recorder()
+    )
+
+    opts.hooks = {
+        on_request = function(method, params)
+            ngx.ctx.yar_call_start = ngx.now()
+            ngx.ctx.yar_method = method
+            -- 可观测性 hooks on_request
+            if obs_hooks.on_request then
+                pcall(obs_hooks.on_request, method, params)
+            end
+        end,
+        on_response = function(method, retval, err_obj)
+            local end_time = ngx.now()
+            ngx.ctx.yar_call_latency = end_time - (ngx.ctx.yar_call_start or end_time)
+            if err_obj then
+                ngx.ctx.yar_error_code = err_obj.code or "UNKNOWN"
+                -- 熔断器记录失败（仅传输层/超时错误计入）
+                cb.record_failure(url, err_obj.code)
+            else
+                ngx.ctx.yar_error_code = nil
+                -- 熔断器记录成功
+                cb.record_success(url)
+            end
+            -- 可观测性 hooks on_response
+            if obs_hooks.on_response then
+                pcall(obs_hooks.on_response, method, retval, err_obj)
+            end
+        end,
+    }
+
+    local ok_s, serr = pcall(client.set_options, client, opts)
+    if not ok_s then
+        return nil, "failed to set YAR client options: " .. tostring(serr)
+    end
+
+    _client_cache[service] = client
+    return client
 end
 
 --- 从 `/{Service}/{Method}` 解析出 Service 和 Method
@@ -156,27 +237,22 @@ function _M.handle(service, method, payload, service_config)
     -- 1. protobuf decode 请求
     local ok, decoded = pcall(pb.decode, request_type, payload)
     if not ok then
-        return nil, errors.INTERNAL, "protobuf decode failed: " .. tostring(decoded)
+        return nil, errors.INVALID_ARGUMENT, "protobuf decode failed: " .. tostring(decoded)
     end
 
     -- 2. 提取位置参数
     local params = _M.extract_params(decoded, request_type)
 
-    -- 3. 创建 YAR client 并调用（pcall 防止异常抛出）
-    local ok_c, client = pcall(Yar.Client.new, service_config.url)
-    if not ok_c then
-        return nil, errors.INTERNAL, "failed to create YAR client: " .. tostring(client)
-    end
-    if service_config.options then
-        client:set_options(service_config.options)
+    -- 3. 获取（缓存的）YAR client 并调用
+    -- client:call() 返回 nil, err（结构化 Error 对象），不抛异常
+    -- 无需 pcall 包裹——lua-yar 的 call() 内部已捕获所有错误
+    local client, cerr = get_client(service, service_config)
+    if not client then
+        return nil, errors.INTERNAL, cerr
     end
 
     local yar_method = _M.method_to_yar(method)
-    local ok_call, result, err = pcall(client.call, client, yar_method, params)
-    if not ok_call then
-        -- pcall 失败时 result 是异常对象，非 YAR 返回值
-        return nil, errors.INTERNAL, "YAR call exception: " .. tostring(result)
-    end
+    local result, err = client:call(yar_method, params)
     if err then
         local status, msg = errors.map_yar_error(err)
         return nil, status, msg

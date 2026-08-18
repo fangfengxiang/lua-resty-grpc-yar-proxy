@@ -4,7 +4,7 @@ env_to_nginx("LUA_PATH");
 env_to_nginx("LUA_CPATH");
 
 repeat_each(2);
-plan tests => repeat_each() * 3 * 12;
+plan tests => repeat_each() * 3 * 16;
 
 run_tests();
 
@@ -312,5 +312,220 @@ GET /t
 names_count=2
 names[1]=alice
 names[2]=bob
+--- no_error_log
+[error]
+
+=== TEST 13: Client cache — same service reuses Client instance
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local protoc = require("protoc")
+            local pb = require("pb")
+            local Yar = require("yar")
+
+            protoc.new():load([[
+                syntax = "proto3";
+                message CacheTest_PingRequest {}
+                message CacheTest_PingResponse { string result = 1; }
+            ]])
+
+            local new_count = 0
+            local orig_new = Yar.Client.new
+            Yar.Client.new = function(uri)
+                new_count = new_count + 1
+                local client = orig_new(uri)
+                client.call = function(self, method, params)
+                    return "ok"
+                end
+                return client
+            end
+
+            local bridge = require("resty.grpc_yar_proxy.bridge")
+            bridge.clear_cache()
+
+            local config = { url = "http://mock/api", options = {} }
+            local payload = pb.encode("CacheTest_PingRequest", {})
+
+            -- First call: creates Client (cache miss)
+            bridge.handle("CacheTest", "Ping", payload, config)
+            ngx.say("new_count_after_1=" .. new_count)
+
+            -- Second call: reuses cached Client (cache hit)
+            bridge.handle("CacheTest", "Ping", payload, config)
+            ngx.say("new_count_after_2=" .. new_count)
+        }
+    }
+--- request
+GET /test
+--- response_body
+new_count_after_1=1
+new_count_after_2=1
+--- no_error_log
+[error]
+
+=== TEST 14: clear_cache — clears Client cache so next call creates new Client
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local protoc = require("protoc")
+            local pb = require("pb")
+            local Yar = require("yar")
+
+            protoc.new():load([[
+                syntax = "proto3";
+                message ClearTest_PingRequest {}
+                message ClearTest_PingResponse { string result = 1; }
+            ]])
+
+            local new_count = 0
+            local orig_new = Yar.Client.new
+            Yar.Client.new = function(uri)
+                new_count = new_count + 1
+                local client = orig_new(uri)
+                client.call = function(self, method, params)
+                    return "ok"
+                end
+                return client
+            end
+
+            local bridge = require("resty.grpc_yar_proxy.bridge")
+            bridge.clear_cache()
+
+            local config = { url = "http://mock/api", options = {} }
+            local payload = pb.encode("ClearTest_PingRequest", {})
+
+            -- First call: creates Client
+            bridge.handle("ClearTest", "Ping", payload, config)
+            ngx.say("new_count_after_1=" .. new_count)
+
+            -- Clear cache
+            bridge.clear_cache()
+
+            -- Second call: creates new Client (cache was cleared)
+            bridge.handle("ClearTest", "Ping", payload, config)
+            ngx.say("new_count_after_2=" .. new_count)
+        }
+    }
+--- request
+GET /test
+--- response_body
+new_count_after_1=1
+new_count_after_2=2
+--- no_error_log
+[error]
+
+=== TEST 15: Client.new failure → returns INTERNAL error
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local protoc = require("protoc")
+            local pb = require("pb")
+            local Yar = require("yar")
+
+            protoc.new():load([[
+                syntax = "proto3";
+                message FailNew_PingRequest {}
+                message FailNew_PingResponse { string result = 1; }
+            ]])
+
+            Yar.Client.new = function(uri)
+                error("boom")
+            end
+
+            local bridge = require("resty.grpc_yar_proxy.bridge")
+            bridge.clear_cache()
+
+            local config = { url = "http://mock/api", options = {} }
+            local payload = pb.encode("FailNew_PingRequest", {})
+
+            local resp, status, err = bridge.handle("FailNew", "Ping", payload, config)
+            ngx.say("resp=" .. tostring(resp))
+            ngx.say("status=" .. tostring(status))
+            ngx.say("err_contains=" .. (string.find(err or "", "failed to create") and "yes" or "no"))
+        }
+    }
+--- request
+GET /test
+--- response_body
+resp=nil
+status=13
+err_contains=yes
+--- no_error_log
+[error]
+
+=== TEST 16: hooks injection — hooks passed to set_options and ngx.ctx writes
+--- http_config
+    lua_package_path ";;";
+--- config
+    location /t {
+        content_by_lua_block {
+            local protoc = require("protoc")
+            local pb = require("pb")
+            local Yar = require("yar")
+
+            protoc.new():load([[
+                syntax = "proto3";
+                message HookTest_PingRequest {}
+                message HookTest_PingResponse { string result = 1; }
+            ]])
+
+            local captured_hooks
+            local orig_new = Yar.Client.new
+            Yar.Client.new = function(uri)
+                local client = orig_new(uri)
+                client.set_options = function(self, opts)
+                    captured_hooks = opts.hooks
+                end
+                client.call = function(self, method, params)
+                    return "ok"
+                end
+                return client
+            end
+
+            local bridge = require("resty.grpc_yar_proxy.bridge")
+            bridge.clear_cache()
+
+            local config = { url = "http://mock/api", options = {} }
+            local payload = pb.encode("HookTest_PingRequest", {})
+
+            bridge.handle("HookTest", "Ping", payload, config)
+
+            -- 验证 hooks 被传递
+            ngx.say("hooks_set=" .. (captured_hooks and "yes" or "no"))
+            ngx.say("on_request=" .. (captured_hooks and captured_hooks.on_request and "yes" or "no"))
+            ngx.say("on_response=" .. (captured_hooks and captured_hooks.on_response and "yes" or "no"))
+
+            -- 功能验证：直接调用 hooks 验证 ngx.ctx 写入
+            captured_hooks.on_request("add", {1, 2})
+            ngx.say("yar_method=" .. tostring(ngx.ctx.yar_method))
+            ngx.say("has_start=" .. tostring(ngx.ctx.yar_call_start ~= nil))
+
+            captured_hooks.on_response("add", 3, nil)
+            ngx.say("has_latency=" .. tostring(ngx.ctx.yar_call_latency ~= nil))
+            ngx.say("err_code=" .. tostring(ngx.ctx.yar_error_code))
+
+            -- 验证 err_obj 路径
+            local fake_err = { code = "TRANSPORT", message = "refused" }
+            captured_hooks.on_response("add", nil, fake_err)
+            ngx.say("err_code=" .. tostring(ngx.ctx.yar_error_code))
+        }
+    }
+--- request
+GET /t
+--- response_body
+hooks_set=yes
+on_request=yes
+on_response=yes
+yar_method=add
+has_start=true
+has_latency=true
+err_code=nil
+err_code=TRANSPORT
 --- no_error_log
 [error]

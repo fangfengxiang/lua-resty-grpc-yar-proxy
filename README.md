@@ -10,7 +10,10 @@
 - **约定式映射** — 无需逐方法配置，仅需 `services` 表（服务名 → `.pb` 文件 + YAR Server URL）
 - **预编译 .pb 加载** — 启动时通过 `pb.load()` 加载二进制描述符，运行时零 `protoc` 依赖
 - **流式拒绝** — 对 Server/Client/Bidi streaming 返回 `grpc-status: 12` (UNIMPLEMENTED)
-- **标准错误码映射** — YAR 传输/超时/协议错误自动映射为 gRPC 状态码
+- **标准错误码映射** — YAR 传输/超时/协议错误自动映射为 gRPC 状态码；客户端参数错误返回 `INVALID_ARGUMENT(3)`
+- **Deadline 传播** — 解析 `grpc-timeout` header，前后检查 deadline 是否过期
+- **熔断器** — 3 态状态机（CLOSED/OPEN/HALF_OPEN），跨 worker 状态，hooks 驱动
+- **可观测性** — 请求 ID、结构化 JSON 访问日志、Prometheus 指标导出、deferred 日志模式，可组合 hooks
 - **非阻塞 I/O** — 出向 YAR 调用走 OpenResty cosocket，不阻塞 worker
 - **最小依赖** — `lua-yar` + `lua-protobuf` + OpenResty
 
@@ -39,6 +42,13 @@ opm get fangfengxiang/lua-resty-grpc-yar-proxy
 http {
     lua_package_path ";;";
 
+    # 熔断器和指标共享内存（可选，无则降级为模块级 table）
+    lua_shared_dict grpc_yar_proxy_cb 1m;
+    lua_shared_dict grpc_yar_proxy_metrics 1m;
+
+    # 防止请求体 spill 到磁盘
+    client_body_buffer_size 2m;
+
     init_by_lua_block {
         local proxy = require("resty.grpc_yar_proxy")
 
@@ -58,6 +68,11 @@ http {
                 timeout         = 3000,
                 connect_timeout = 1000,
             },
+            -- 熔断器配置（可选）
+            circuit_breaker = {
+                failure_threshold = 5,
+                cooldown_ms       = 5000,
+            },
         }
     }
 
@@ -67,6 +82,11 @@ http {
         location / {
             content_by_lua_block {
                 require("resty.grpc_yar_proxy").serve()
+            }
+
+            # 异步日志/指标阶段（可选，推荐启用）
+            log_by_lua_block {
+                require("resty.grpc_yar_proxy").log_phase()
             }
         }
     }
@@ -81,10 +101,60 @@ gRPC 客户端调用 `/{Service}/{Method}`（如 `/Calculator/Add`），代理�
 
 ```
 lib/resty/grpc_yar_proxy/
-├── init.lua       -- 入口模块：setup() 和 serve()
-├── codec.lua      -- gRPC 帧编解码（5 字节帧头 + payload）
-├── bridge.lua     -- gRPC ↔ YAR 协议转换核心
-└── errors.lua     -- gRPC 状态码映射与响应
+├── init.lua             -- 入口模块：setup() 和 serve() 和 log_phase()
+├── codec.lua            -- gRPC 帧编解码（5 字节帧头 + payload）
+├── bridge.lua           -- gRPC ↔ YAR 协议转换核心
+├── errors.lua           -- gRPC 状态码映射与响应
+├── deadline.lua         -- gRPC deadline 解析与前后检查
+├── circuit_breaker.lua  -- 熔断器（3 态状态机，跨 worker）
+└── observability.lua    -- 可观测性（请求 ID、访问日志、指标）
+```
+
+## 可观测性 API
+
+`observability.lua` 提供以下公开函数和 hooks 工厂：
+
+| 函数 / 工厂 | 说明 |
+|---|---|
+| `get_request_id()` | 获取当前请求 ID（从 `ngx.ctx` 读取或生成） |
+| `ensure_request_id(header_name?)` | 从 header 提取或生成请求 ID，存入 `ngx.ctx` |
+| `trace_middleware(opts?)` | hooks 工厂：生成/提取请求 ID |
+| `access_logger(opts?)` | hooks 工厂：结构化 JSON 访问日志（支持 `defer=true` 延迟模式） |
+| `metrics_recorder(opts?)` | hooks 工厂：ngx.shared.DICT 计数器 + 延迟直方图 + `export()` |
+| `compose(...)` | 组合多个 hooks，每个 hook 独立 pcall 隔离 |
+| `flush_logs(opts?)` | 在 `log_by_lua` 阶段输出延迟的访问日志 |
+
+**Deferred 日志模式** — 将日志 I/O 移出响应热路径：
+
+```nginx
+init_by_lua_block {
+    local obs = require("resty.grpc_yar_proxy.observability")
+    -- 使用 defer=true，on_response 仅存储 entry 到 ngx.ctx
+    local hooks = obs.compose(
+        obs.trace_middleware(),
+        obs.access_logger({ defer = true }),
+        obs.metrics_recorder()
+    )
+    -- hooks 注入到 bridge.lua 的 YAR Client 中...
+}
+
+# log_by_lua 阶段调用 flush_logs() 输出延迟日志
+log_by_lua_block {
+    require("resty.grpc_yar_proxy.observability").flush_logs()
+}
+```
+
+**Prometheus 指标导出** — 通过 `export()` 函数获取 Prometheus exposition format：
+
+```nginx
+location /metrics {
+    content_by_lua_block {
+        local obs = require("resty.grpc_yar_proxy.observability")
+        local hooks = obs.metrics_recorder()
+        ngx.header["content-type"] = "text/plain"
+        ngx.say(hooks.export())
+    }
+}
 ```
 
 ## 开发

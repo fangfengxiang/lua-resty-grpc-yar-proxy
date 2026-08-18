@@ -4,7 +4,7 @@ env_to_nginx("LUA_PATH");
 env_to_nginx("LUA_CPATH");
 
 repeat_each(2);
-plan tests => repeat_each() * 3 * 6;
+plan tests => repeat_each() * 3 * 9;
 
 run_tests();
 
@@ -348,7 +348,7 @@ connect_timeout=1000
 --- request
 GET /test
 --- response_body
-grpc_status=13
+grpc_status=3
 --- no_error_log
 [error]
 
@@ -415,5 +415,231 @@ GET /test
 --- response_body
 svc_a=0
 svc_b=0
+--- no_error_log
+[error]
+
+=== TEST 7: Persistent Client — multiple requests reuse same Client instance
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        local pb_dir = ngx.config.prefix()
+        local protoc = require("protoc")
+        local Yar = require("yar")
+
+        local f = io.open(pb_dir .. "/test_persist.pb", "wb")
+        f:write(protoc.new():compile([[
+            syntax = "proto3";
+            message Persist_PingRequest {}
+            message Persist_PingResponse { string result = 1; }
+        ]]))
+        f:close()
+
+        _G.client_new_count = 0
+        local orig_new = Yar.Client.new
+        Yar.Client.new = function(uri)
+            _G.client_new_count = _G.client_new_count + 1
+            local client = orig_new(uri)
+            client.call = function(self, method, params)
+                return "ok"
+            end
+            return client
+        end
+
+        require("resty.grpc_yar_proxy").setup {
+            services = {
+                Persist = { proto = pb_dir .. "/test_persist.pb", url = "http://mock/api" },
+            },
+        }
+    }
+--- config
+    location ~ ^/Persist/ {
+        content_by_lua_block {
+            require("resty.grpc_yar_proxy").serve()
+        }
+    }
+    location /test {
+        content_by_lua_block {
+            local codec = require("resty.grpc_yar_proxy.codec")
+            local frame = codec.encode_frame("")
+
+            -- First request: creates Client
+            local res1 = ngx.location.capture("/Persist/Ping", {
+                method = ngx.HTTP_POST,
+                body = frame,
+            })
+
+            -- Second request: reuses cached Client
+            local res2 = ngx.location.capture("/Persist/Ping", {
+                method = ngx.HTTP_POST,
+                body = frame,
+            })
+
+            ngx.say("grpc_status_1=" .. (res1.header["grpc-status"] or "nil"))
+            ngx.say("grpc_status_2=" .. (res2.header["grpc-status"] or "nil"))
+            ngx.say("client_new_count=" .. _G.client_new_count)
+        }
+    }
+--- request
+GET /test
+--- response_body
+grpc_status_1=0
+grpc_status_2=0
+client_new_count=1
+--- no_error_log
+[error]
+
+=== TEST 8: deep_merge — nested keepalive options merge correctly
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        local pb_dir = ngx.config.prefix()
+        local protoc = require("protoc")
+        local Yar = require("yar")
+
+        local f = io.open(pb_dir .. "/test_merge.pb", "wb")
+        f:write(protoc.new():compile([[
+            syntax = "proto3";
+            message Merge_PingRequest {}
+            message Merge_PingResponse { string result = 1; }
+        ]]))
+        f:close()
+
+        _G.test_opts = nil
+        local orig_new = Yar.Client.new
+        Yar.Client.new = function(uri)
+            local client = orig_new(uri)
+            client.set_options = function(self, opts)
+                _G.test_opts = opts
+            end
+            client.call = function(self, method, params)
+                return "ok"
+            end
+            return client
+        end
+
+        require("resty.grpc_yar_proxy").setup {
+            services = {
+                Merge = {
+                    proto   = pb_dir .. "/test_merge.pb",
+                    url     = "http://mock/api",
+                    options = { keepalive = { pool_size = 128 } },
+                },
+            },
+            yar_options = { keepalive = { pool_size = 64, idle_timeout = 60000 } },
+        }
+    }
+--- config
+    location ~ ^/Merge/ {
+        content_by_lua_block {
+            require("resty.grpc_yar_proxy").serve()
+        }
+    }
+    location /test {
+        content_by_lua_block {
+            local codec = require("resty.grpc_yar_proxy.codec")
+            local frame = codec.encode_frame("")
+
+            local res = ngx.location.capture("/Merge/Ping", {
+                method = ngx.HTTP_POST,
+                body = frame,
+            })
+
+            ngx.say("grpc_status=" .. (res.header["grpc-status"] or "nil"))
+            -- per-service pool_size=128 overrides global pool_size=64
+            -- global idle_timeout=60000 is preserved (deep_merge, not shallow replace)
+            ngx.say("pool_size=" .. (_G.test_opts and _G.test_opts.keepalive and _G.test_opts.keepalive.pool_size or "nil"))
+            ngx.say("idle_timeout=" .. (_G.test_opts and _G.test_opts.keepalive and _G.test_opts.keepalive.idle_timeout or "nil"))
+            ngx.say("persistent=" .. tostring(_G.test_opts and _G.test_opts.persistent))
+        }
+    }
+--- request
+GET /test
+--- response_body
+grpc_status=0
+pool_size=128
+idle_timeout=60000
+persistent=true
+--- no_error_log
+[error]
+
+=== TEST 9: log_phase — structured log from ngx.ctx metadata
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        local pb_dir = ngx.config.prefix()
+        local protoc = require("protoc")
+        local Yar = require("yar")
+
+        local f = io.open(pb_dir .. "/test_log.pb", "wb")
+        f:write(protoc.new():compile([[
+            syntax = "proto3";
+            message Log_PingRequest {}
+            message Log_PingResponse { string result = 1; }
+        ]]))
+        f:close()
+
+        local orig_new = Yar.Client.new
+        Yar.Client.new = function(uri)
+            local client = orig_new(uri)
+            client.call = function(self, method, params)
+                return "ok"
+            end
+            return client
+        end
+
+        require("resty.grpc_yar_proxy").setup {
+            services = {
+                Log = { proto = pb_dir .. "/test_log.pb", url = "http://mock/api" },
+            },
+            log_level = Yar.Log.DEBUG,
+        }
+    }
+--- config
+    location ~ ^/Log/ {
+        content_by_lua_block {
+            require("resty.grpc_yar_proxy").serve()
+        }
+        log_by_lua_block {
+            require("resty.grpc_yar_proxy").log_phase()
+        }
+    }
+    location /test {
+        content_by_lua_block {
+            local codec = require("resty.grpc_yar_proxy.codec")
+            local proxy = require("resty.grpc_yar_proxy")
+            local frame = codec.encode_frame("")
+
+            local res = ngx.location.capture("/Log/Ping", {
+                method = ngx.HTTP_POST,
+                body = frame,
+            })
+
+            ngx.say("grpc_status=" .. (res.header["grpc-status"] or "nil"))
+
+            -- 直接测试 log_phase()：设置 ngx.ctx 并 mock ngx.log 捕获输出
+            ngx.ctx.grpc_service = "DirectTest"
+            ngx.ctx.grpc_method = "Ping"
+            ngx.ctx.grpc_status = 0
+            ngx.ctx.yar_call_latency = 0.050
+
+            local captured
+            local orig_log = ngx.log
+            ngx.log = function(level, msg)
+                if level == ngx.INFO then
+                    captured = msg
+                end
+            end
+
+            proxy.log_phase()
+            ngx.log = orig_log
+
+            ngx.say("log_phase_output=" .. (captured or "nil"))
+        }
+    }
+--- request
+GET /test
+--- response_body
+grpc_status=0
+log_phase_output=grpc_yar_proxy DirectTest/Ping status=0 yar_latency_ms=50.000
 --- no_error_log
 [error]

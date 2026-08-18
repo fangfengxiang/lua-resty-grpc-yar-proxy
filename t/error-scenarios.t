@@ -4,7 +4,7 @@ env_to_nginx("LUA_PATH");
 env_to_nginx("LUA_CPATH");
 
 repeat_each(2);
-plan tests => repeat_each() * 3 * 7;
+plan tests => repeat_each() * 3 * 8;
 
 run_tests();
 
@@ -119,7 +119,7 @@ grpc_message=service not found: Unknown
 --- request
 GET /test
 --- response_body
-grpc_status=13
+grpc_status=3
 --- no_error_log
 [error]
 
@@ -161,8 +161,11 @@ grpc_status=13
     location /test {
         content_by_lua_block {
             -- Construct frame with compression flag = 1
-            local Util = require("yar.util")
-            local compressed_frame = string.char(1) .. Util.pack_u32(5) .. "hello"
+            local compressed_frame = string.char(1) .. string.char(
+                math.floor(5 / 0x1000000) % 0x100,
+                math.floor(5 / 0x10000) % 0x100,
+                math.floor(5 / 0x100) % 0x100,
+                5 % 0x100) .. "hello"
 
             local res = ngx.location.capture("/Echo/Ping", {
                 method = ngx.HTTP_POST,
@@ -230,7 +233,7 @@ grpc_message=compression not supported
 --- request
 GET /test
 --- response_body
-grpc_status=13
+grpc_status=3
 --- no_error_log
 [error]
 
@@ -330,5 +333,64 @@ grpc_yar_proxy: service 'NoUrl' is missing or has invalid 'url' field
 GET /test
 --- response_body
 grpc_yar_proxy: service 'BadOpt' options must be a table
+--- no_error_log
+[error]
+
+=== TEST 8: Structured YAR Error (TRANSPORT) → status 14 (UNAVAILABLE)
+--- http_config
+    lua_package_path ";;";
+    init_by_lua_block {
+        local pb_dir = ngx.config.prefix()
+        local protoc = require("protoc")
+        local Yar = require("yar")
+
+        local f = io.open(pb_dir .. "/test_err8.pb", "wb")
+        f:write(protoc.new():compile([[
+            syntax = "proto3";
+            message Echo_PingRequest {}
+            message Echo_PingResponse { string result = 1; }
+        ]]))
+        f:close()
+
+        local orig_new = Yar.Client.new
+        Yar.Client.new = function(uri)
+            local client = orig_new(uri)
+            client.call = function(self, method, params)
+                return nil, Yar.Error.new(Yar.Error.TRANSPORT, "connection refused")
+            end
+            return client
+        end
+
+        require("resty.grpc_yar_proxy").setup {
+            services = {
+                Echo = { proto = pb_dir .. "/test_err8.pb", url = "http://mock/api" },
+            },
+        }
+    }
+--- config
+    location ~ ^/Echo/ {
+        content_by_lua_block {
+            require("resty.grpc_yar_proxy").serve()
+        }
+    }
+    location /test {
+        content_by_lua_block {
+            local codec = require("resty.grpc_yar_proxy.codec")
+            local frame = codec.encode_frame("")
+
+            local res = ngx.location.capture("/Echo/Ping", {
+                method = ngx.HTTP_POST,
+                body = frame,
+            })
+
+            ngx.say("grpc_status=" .. (res.header["grpc-status"] or "nil"))
+            ngx.say("grpc_message=" .. (res.header["grpc-message"] or "nil"))
+        }
+    }
+--- request
+GET /test
+--- response_body
+grpc_status=14
+grpc_message=connection refused
 --- no_error_log
 [error]

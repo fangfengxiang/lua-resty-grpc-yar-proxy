@@ -1,8 +1,6 @@
 -- lib/resty/grpc_yar_proxy/codec.lua
 -- gRPC 帧编解码：5 字节帧头（1 字节压缩标志 + 4 字节大端长度）+ protobuf payload
--- 复用 lua-yar.Util.pack_u32 / unpack_u32 实现大端 uint32 编解码
-
-local Util = require("yar.util")
+-- 参考：gRPC over HTTP/2 协议规范 (https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md)
 
 local _M = {}
 
@@ -11,6 +9,22 @@ _M.FRAME_HEADER_SIZE = 5
 
 -- 压缩标志常量
 _M.COMPRESSION_NONE = 0
+
+-- 大端 uint32 编码（gRPC 帧头长度字段，proxy 自包含实现，不依赖外部库）
+local function pack_u32_be(n)
+    return string.char(
+        math.floor(n / 0x1000000) % 0x100,
+        math.floor(n / 0x10000) % 0x100,
+        math.floor(n / 0x100) % 0x100,
+        n % 0x100)
+end
+
+-- 大端 uint32 解码（gRPC 帧头长度字段）
+local function unpack_u32_be(s, offset)
+    offset = offset or 1
+    local a, b, c, d = string.byte(s, offset, offset + 3)
+    return a * 0x1000000 + b * 0x10000 + c * 0x100 + d
+end
 
 --- 解析 gRPC 帧
 -- @param body string HTTP/2 请求体
@@ -27,7 +41,7 @@ function _M.decode_frame(body)
     end
 
     local compressed_flag = string.byte(body, 1, 1)
-    local payload_len     = Util.unpack_u32(body, 2)
+    local payload_len     = unpack_u32_be(body, 2)
 
     if #body < _M.FRAME_HEADER_SIZE + payload_len then
         return nil, nil, nil, "incomplete gRPC frame payload"
@@ -49,7 +63,7 @@ end
 function _M.encode_frame(payload)
     payload = payload or ""
     local flag = string.char(_M.COMPRESSION_NONE)
-    return flag .. Util.pack_u32(#payload) .. payload
+    return flag .. pack_u32_be(#payload) .. payload
 end
 
 --- 检测请求体是否包含多个 gRPC 帧（流式模式检测）
