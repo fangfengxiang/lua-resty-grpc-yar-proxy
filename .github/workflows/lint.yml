@@ -1,0 +1,24 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq luarocks
+          sudo luarocks install luacheck
+      - name: Lint
+        run: luacheck lib/

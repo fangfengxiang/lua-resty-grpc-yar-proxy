@@ -1,0 +1,88 @@
+name: Release
+
+# Triggered when a version tag (v*) is pushed.
+# Convention: tag name = v<version>, e.g. v0.1.0, v0.2.0-rc1
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Verify dist.ini version matches tag
+        run: |
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          DIST_VERSION=$(grep '^version=' dist.ini | cut -d= -f2)
+          if [ "$TAG_VERSION" != "$DIST_VERSION" ]; then
+            echo "::error::Version mismatch: tag=$TAG_VERSION dist.ini=$DIST_VERSION"
+            exit 1
+          fi
+
+      - name: Install OpenResty (for opm build)
+        run: |
+          wget -qO - https://openresty.org/package/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+          codename=$(lsb_release -sc)
+          echo "deb [signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/ubuntu $codename main" \
+            | sudo tee /etc/apt/sources.list.d/openresty.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openresty openresty-opm
+          echo "/usr/local/openresty/bin" >> $GITHUB_PATH
+
+      - name: OPM build validation
+        run: |
+          printf 'github_account=fangfengxiang\ndownload_server=https://opm.openresty.org\n' > ~/.opmrc
+          opm build
+
+      - name: Create source tarball
+        run: |
+          git archive --format=tar.gz \
+            --prefix=lua-resty-grpc-yar-proxy-${{ steps.version.outputs.version }}/ \
+            -o lua-resty-grpc-yar-proxy-${{ steps.version.outputs.version }}.tar.gz HEAD
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: lua-resty-grpc-yar-proxy v${{ steps.version.outputs.version }}
+          body: |
+            gRPC to YAR protocol proxy for OpenResty, bridging gRPC clients to PHP YAR servers.
+
+            ## Installation
+
+            ```bash
+            opm get fangfengxiang/lua-resty-grpc-yar-proxy
+            ```
+
+            Dependencies: [lua-yar](https://github.com/fangfengxiang/lua-yar) + [lua-protobuf](https://github.com/starwing/lua-protobuf).
+
+            ## Key Features
+
+            - Protocol-transparent gRPC ↔ YAR conversion (Unary only)
+            - Convention-based service mapping (no per-method config)
+            - Pre-compiled .pb descriptor loading
+            - gRPC status code mapping from YAR errors
+            - Deadline propagation from grpc-timeout header
+            - Circuit breaker (3-state, cross-worker)
+            - Observability: request ID, JSON access log, Prometheus metrics, composable hooks
+            - Non-blocking cosocket I/O
+
+            ## Documentation
+
+            - [README](https://github.com/fangfengxiang/lua-resty-grpc-yar-proxy#readme)
+            - [API Reference](https://fangfengxiang.github.io/lua-resty-grpc-yar-proxy/)
+            - [Changelog](https://github.com/fangfengxiang/lua-resty-grpc-yar-proxy/blob/main/CHANGELOG.md)
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            lua-resty-grpc-yar-proxy-${{ steps.version.outputs.version }}.tar.gz
