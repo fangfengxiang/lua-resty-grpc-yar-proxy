@@ -110,13 +110,13 @@ lib/resty/grpc_yar_proxy/
 ├── deadline.lua         -- gRPC deadline 解析与前后检查
 ├── circuit_breaker.lua  -- 熔断器（3 态状态机，跨 worker）
 ├── trace.lua            -- 请求 ID 管理 + hooks 组合（compose）+ 错误状态
-├── access_log.lua       -- 结构化 JSON 访问日志 + 延迟日志输出
+├── log.lua              -- 结构化 JSON 访问日志 + 延迟日志输出
 └── metrics.lua          -- 指标记录 + Prometheus 导出
 ```
 
 ## 可观测性 API
 
-可观测性拆分为 3 个模块：`trace.lua`（基础模块）、`access_log.lua`、`metrics.lua`。
+可观测性拆分为 3 个模块：`trace.lua`（基础模块）、`log.lua`、`metrics.lua`。
 
 ### trace.lua
 
@@ -128,7 +128,7 @@ lib/resty/grpc_yar_proxy/
 | `compose(...)` | 组合多个 hooks，每个 hook 独立 pcall 隔离 |
 | `error_status(err_obj?)` | 从 Error 对象提取错误状态字符串 |
 
-### access_log.lua
+### log.lua
 
 | 函数 / 工厂 | 说明 |
 |---|---|
@@ -146,12 +146,12 @@ lib/resty/grpc_yar_proxy/
 ```nginx
 init_by_lua_block {
     local trace = require("resty.grpc_yar_proxy.trace")
-    local access_log = require("resty.grpc_yar_proxy.access_log")
+    local log = require("resty.grpc_yar_proxy.log")
     local metrics = require("resty.grpc_yar_proxy.metrics")
     -- 使用 defer=true，on_response 仅存储 entry 到 ngx.ctx
     local hooks = trace.compose(
         trace.trace_middleware(),
-        access_log.access_logger({ defer = true }),
+        log.access_logger({ defer = true }),
         metrics.metrics_recorder()
     )
     -- hooks 注入到 bridge.lua 的 YAR Client 中...
@@ -159,7 +159,7 @@ init_by_lua_block {
 
 # log_by_lua 阶段调用 flush_logs() 输出延迟日志
 log_by_lua_block {
-    require("resty.grpc_yar_proxy.access_log").flush_logs()
+    require("resty.grpc_yar_proxy.log").flush_logs()
 }
 ```
 

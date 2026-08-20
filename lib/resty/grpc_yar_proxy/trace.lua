@@ -1,6 +1,6 @@
 -- lib/resty/grpc_yar_proxy/trace.lua
 -- 请求 ID 管理 + hooks 组合 + 错误状态提取
--- 可观测性基础模块，被 access_log.lua 和 metrics.lua 依赖
+-- 可观测性基础模块，被 log.lua 和 metrics.lua 依赖
 --
 -- 从 observability.lua 拆出：
 --   gen_request_id()              — 多熵源混合生成 request ID
@@ -12,7 +12,7 @@
 --   compose()                      — 组合多个 hooks，pcall 隔离
 --   error_status()                — 从 Error 对象提取错误状态字符串
 --
--- 共享 ctx key（access_log 和 metrics 共用）：
+-- 共享 ctx key（log 和 metrics 共用）：
 --   CTX_START_TIME — 请求开始时间戳
 
 local ngx = ngx
@@ -69,7 +69,7 @@ local function get_or_create_request_id()
     return id
 end
 
--- 导出内部函数供 access_log.lua 使用
+-- 导出内部函数供 log.lua 使用
 _M.get_or_create_request_id = get_or_create_request_id
 
 --- 从 Error 对象提取错误状态字符串

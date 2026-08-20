@@ -96,8 +96,8 @@ rid_match=true
 --- config
     location /t {
         content_by_lua_block {
-            local access_log = require("resty.grpc_yar_proxy.access_log")
-            local hooks = access_log.access_logger()
+            local log = require("resty.grpc_yar_proxy.log")
+            local hooks = log.access_logger()
             ngx.ctx.request_id = "test-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
@@ -120,8 +120,8 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local access_log = require("resty.grpc_yar_proxy.access_log")
-            local hooks = access_log.access_logger()
+            local log = require("resty.grpc_yar_proxy.log")
+            local hooks = log.access_logger()
             ngx.ctx.request_id = "test-rid"
             hooks.on_request("add", {1, 2})
             local err_obj = { code = "TRANSPORT", message = "conn refused" }
@@ -144,8 +144,8 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local access_log = require("resty.grpc_yar_proxy.access_log")
-            local hooks = access_log.access_logger({ defer = true })
+            local log = require("resty.grpc_yar_proxy.log")
+            local hooks = log.access_logger({ defer = true })
             ngx.ctx.request_id = "defer-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
@@ -168,13 +168,13 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local access_log = require("resty.grpc_yar_proxy.access_log")
-            local hooks = access_log.access_logger({ defer = true })
+            local log = require("resty.grpc_yar_proxy.log")
+            local hooks = log.access_logger({ defer = true })
             ngx.ctx.request_id = "flush-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
             -- Manually call flush_logs to simulate log_by_lua
-            access_log.flush_logs()
+            log.flush_logs()
             ngx.say("done=true")
         }
     }

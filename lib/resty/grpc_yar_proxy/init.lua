@@ -20,7 +20,7 @@ local errors    = require("resty.grpc_yar_proxy.errors")
 local deadline  = require("resty.grpc_yar_proxy.deadline")
 local cb        = require("resty.grpc_yar_proxy.circuit_breaker")
 local trace     = require("resty.grpc_yar_proxy.trace")
-local access_log = require("resty.grpc_yar_proxy.access_log")
+local log = require("resty.grpc_yar_proxy.log")
 
 local _M = {}
 _M.VERSION = "0.2.0"
@@ -313,7 +313,7 @@ end
 
 --- 异步日志阶段（在 log_by_lua_block 中调用）
 -- 从 ngx.ctx 读取请求元数据和 YAR 调用元数据，输出结构化日志行
--- 同时调用 access_log.flush_logs() 输出延迟的访问日志（deferred 模式）
+-- 同时调用 log.flush_logs() 输出延迟的访问日志（deferred 模式）
 -- 所有字段做 nil 兜底，确保 serve() 未执行时不报错
 function _M.log_phase()
     local ctx = ngx.ctx
@@ -333,7 +333,7 @@ function _M.log_phase()
     ngx.log(ngx.INFO, line)
 
     -- 输出延迟的访问日志（deferred 模式，无 entry 时静默返回）
-    access_log.flush_logs()
+    log.flush_logs()
 end
 
 return _M

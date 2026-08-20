@@ -1,4 +1,4 @@
--- lib/resty/grpc_yar_proxy/access_log.lua
+-- lib/resty/grpc_yar_proxy/log.lua
 -- 结构化 JSON 访问日志 + 延迟日志输出
 -- 从 observability.lua 拆出，依赖 trace.lua 的 error_status / get_or_create_request_id / CTX_START_TIME
 --
@@ -23,7 +23,7 @@ local CTX_START_TIME = trace.CTX_START_TIME
 
 local _M = {}
 
--- 仅 access_log 使用的 ctx key
+-- 仅 log 使用的 ctx key
 local CTX_PARAMS_SIZE = "grpc_yar_obs_params_size"
 -- 延迟日志模式：on_response 组装 entry 存到此 key，由 flush_logs() 在 log_by_lua 阶段输出
 local CTX_LOG_ENTRY = "grpc_yar_obs_log_entry"
@@ -141,8 +141,8 @@ end
 
 --- 在 log_by_lua 阶段输出延迟的访问日志
 -- 配合 access_logger({ defer = true }) 使用：
---   init_by_lua:      hooks = access_log.access_logger({ defer = true })
---   log_by_lua_block: require("resty.grpc_yar_proxy.access_log").flush_logs()
+--   init_by_lua:      hooks = log.access_logger({ defer = true })
+--   log_by_lua_block: require("resty.grpc_yar_proxy.log").flush_logs()
 -- 从 ngx.ctx 读取 on_response 组装的 entry 并输出。
 -- 若 entry 不存在（非 RPC 请求或未配置 defer 模式），静默返回。
 -- @param opts table|nil { writer = fn(level, msg) }，默认 ngx.log(ngx.INFO, ...)

@@ -3,7 +3,7 @@
 -- protobuf decode → YAR 请求构造 → YAR 调用 → 响应映射 → protobuf encode
 --
 -- 纯协议转换函数已提取到 converter.lua（零 ngx.* 依赖，可独立测试）
--- 可观测性 hooks 已拆分到 trace.lua / access_log.lua / metrics.lua
+-- 可观测性 hooks 已拆分到 trace.lua / log.lua / metrics.lua
 
 local pb        = require("pb")
 local Yar       = require("yar")
@@ -11,7 +11,7 @@ local errors    = require("resty.grpc_yar_proxy.errors")
 local cb        = require("resty.grpc_yar_proxy.circuit_breaker")
 local converter = require("resty.grpc_yar_proxy.converter")
 local trace     = require("resty.grpc_yar_proxy.trace")
-local access_log = require("resty.grpc_yar_proxy.access_log")
+local log = require("resty.grpc_yar_proxy.log")
 local metrics   = require("resty.grpc_yar_proxy.metrics")
 
 local _M = {}
@@ -61,7 +61,7 @@ local function get_client(service, service_config)
     local url = service_config.url
     local obs_hooks = trace.compose(
         trace.trace_middleware(),
-        access_log.access_logger(),
+        log.access_logger(),
         metrics.metrics_recorder()
     )
 
