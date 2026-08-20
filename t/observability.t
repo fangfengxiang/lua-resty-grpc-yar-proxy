@@ -16,12 +16,12 @@ __DATA__
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.trace_middleware()
+            local trace = require("resty.grpc_yar_proxy.trace")
+            local hooks = trace.trace_middleware()
             hooks.on_request("add", {1, 2})
             ngx.say("rid_set=" .. tostring(ngx.ctx.request_id ~= nil))
             ngx.say("rid_len=" .. #ngx.ctx.request_id)
-        end
+        }
     }
 --- request
 GET /t
@@ -37,12 +37,12 @@ rid_len=8
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.trace_middleware()
+            local trace = require("resty.grpc_yar_proxy.trace")
+            local hooks = trace.trace_middleware()
             ngx.ctx.request_id = "test-rid-123"
             hooks.on_request("add", {1, 2})
             ngx.say("rid=" .. ngx.ctx.request_id)
-        end
+        }
     }
 --- request
 GET /t
@@ -57,10 +57,10 @@ rid=test-rid-123
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
+            local trace = require("resty.grpc_yar_proxy.trace")
             ngx.ctx.request_id = "my-rid"
-            ngx.say("rid=" .. observability.get_request_id())
-        end
+            ngx.say("rid=" .. trace.get_request_id())
+        }
     }
 --- request
 GET /t
@@ -75,8 +75,8 @@ rid=my-rid
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local rid = observability.ensure_request_id()
+            local trace = require("resty.grpc_yar_proxy.trace")
+            local rid = trace.ensure_request_id()
             ngx.say("rid_set=" .. tostring(ngx.ctx.request_id ~= nil))
             ngx.say("rid_match=" .. tostring(rid == ngx.ctx.request_id))
         }
@@ -96,8 +96,8 @@ rid_match=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.access_logger()
+            local access_log = require("resty.grpc_yar_proxy.access_log")
+            local hooks = access_log.access_logger()
             ngx.ctx.request_id = "test-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
@@ -120,14 +120,14 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.access_logger()
+            local access_log = require("resty.grpc_yar_proxy.access_log")
+            local hooks = access_log.access_logger()
             ngx.ctx.request_id = "test-rid"
             hooks.on_request("add", {1, 2})
             local err_obj = { code = "TRANSPORT", message = "conn refused" }
             hooks.on_response("add", nil, err_obj)
             ngx.say("done=true")
-        end
+        }
     }
 --- request
 GET /t
@@ -144,8 +144,8 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.access_logger({ defer = true })
+            local access_log = require("resty.grpc_yar_proxy.access_log")
+            local hooks = access_log.access_logger({ defer = true })
             ngx.ctx.request_id = "defer-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
@@ -168,13 +168,13 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.access_logger({ defer = true })
+            local access_log = require("resty.grpc_yar_proxy.access_log")
+            local hooks = access_log.access_logger({ defer = true })
             ngx.ctx.request_id = "flush-rid"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
             -- Manually call flush_logs to simulate log_by_lua
-            observability.flush_logs()
+            access_log.flush_logs()
             ngx.say("done=true")
         }
     }
@@ -193,8 +193,8 @@ done=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
-            local hooks = observability.metrics_recorder()
+            local metrics = require("resty.grpc_yar_proxy.metrics")
+            local hooks = metrics.metrics_recorder()
             ngx.ctx.grpc_service = "Calculator"
             hooks.on_request("add", {1, 2})
             hooks.on_response("add", 42, nil)
@@ -213,7 +213,7 @@ done=true
             end
             ngx.say("found_total=" .. tostring(found_total))
             ngx.say("found_ok=" .. tostring(found_ok))
-        end
+        }
     }
 --- request
 GET /t
@@ -230,17 +230,17 @@ found_ok=true
 --- config
     location /t {
         content_by_lua_block {
-            local observability = require("resty.grpc_yar_proxy.observability")
+            local trace = require("resty.grpc_yar_proxy.trace")
             local bad_hook = {
                 on_request = function(method, params)
                     error("intentional error")
                 end,
             }
-            local good_hook = observability.trace_middleware()
-            local composed = observability.compose(bad_hook, good_hook)
+            local good_hook = trace.trace_middleware()
+            local composed = trace.compose(bad_hook, good_hook)
             composed.on_request("add", {1, 2})
             ngx.say("rid_set=" .. tostring(ngx.ctx.request_id ~= nil))
-        end
+        }
     }
 --- request
 GET /t

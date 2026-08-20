@@ -1,28 +1,28 @@
 -- lib/resty/grpc_yar_proxy/bridge.lua
--- gRPC ↔ YAR 协议转换核心：protobuf decode → YAR 请求构造 → YAR 调用 → 响应映射 → protobuf encode
+-- 正向桥接：gRPC → YAR 方向
+-- protobuf decode → YAR 请求构造 → YAR 调用 → 响应映射 → protobuf encode
+--
+-- 纯协议转换函数已提取到 converter.lua（零 ngx.* 依赖，可独立测试）
+-- 可观测性 hooks 已拆分到 trace.lua / access_log.lua / metrics.lua
 
-local pb      = require("pb")
-local Yar     = require("yar")
-local errors  = require("resty.grpc_yar_proxy.errors")
-local cb      = require("resty.grpc_yar_proxy.circuit_breaker")
-local observability = require("resty.grpc_yar_proxy.observability")
+local pb        = require("pb")
+local Yar       = require("yar")
+local errors    = require("resty.grpc_yar_proxy.errors")
+local cb        = require("resty.grpc_yar_proxy.circuit_breaker")
+local converter = require("resty.grpc_yar_proxy.converter")
+local trace     = require("resty.grpc_yar_proxy.trace")
+local access_log = require("resty.grpc_yar_proxy.access_log")
+local metrics   = require("resty.grpc_yar_proxy.metrics")
 
 local _M = {}
 
--- 模块级缓存：pb.fields 排序后的字段名列表（按类型名索引）
-local _sorted_fields_cache = {}
--- 模块级缓存：Response 索引数组映射所需的 field 1 / repeated 字段名（按类型名索引）
-local _idx_fields_cache = {}
--- 模块级缓存：类型名字符串拼接结果按 service/method 缓存
-local _type_cache = {}
 -- 模块级缓存：YAR Client 实例（service name → Client），persistent 模式跨请求复用
 local _client_cache = {}
 
 --- 清空所有模块级缓存（供 init.setup 重新加载时调用）
+-- 委托 converter.clear_cache() 清空协议转换缓存 + 清空 client 缓存
 function _M.clear_cache()
-    _sorted_fields_cache = {}
-    _idx_fields_cache = {}
-    _type_cache = {}
+    converter.clear_cache()
     _client_cache = {}
 end
 
@@ -59,10 +59,10 @@ local function get_client(service, service_config)
     -- lua-yar 的 run_hook() 内部 pcall 保护，hook 异常不影响主流程
     -- hooks 引用 ngx.ctx 全局 table，per-request 自动隔离，persistent 复用安全
     local url = service_config.url
-    local obs_hooks = observability.compose(
-        observability.trace_middleware(),
-        observability.access_logger(),
-        observability.metrics_recorder()
+    local obs_hooks = trace.compose(
+        trace.trace_middleware(),
+        access_log.access_logger(),
+        metrics.metrics_recorder()
     )
 
     opts.hooks = {
@@ -102,116 +102,6 @@ local function get_client(service, service_config)
     return client
 end
 
---- 从 `/{Service}/{Method}` 解析出 Service 和 Method
--- @param path string gRPC path（ngx.var.uri）
--- @return service string|nil
--- @return method string|nil
--- @return err string|nil 错误信息
-function _M.parse_grpc_path(path)
-    if not path or path == "" then
-        return nil, nil, "invalid gRPC path: empty"
-    end
-    -- 去除前导 / 并匹配 {Service}/{Method} 格式
-    local service, method = path:match("^/+([^/]+)/([^/]+)$")
-    if not service or not method or service == "" or method == "" then
-        return nil, nil, "invalid gRPC path: " .. (path or "nil")
-    end
-    return service, method
-end
-
---- 将 gRPC Method 名首字母小写作为 YAR method 名
--- @param method string gRPC Method 名（如 "Add"）
--- @return string YAR method 名（如 "add"）
-function _M.method_to_yar(method)
-    if not method or #method == 0 then
-        return method
-    end
-    local first = method:sub(1, 1):lower()
-    local rest  = method:sub(2)
-    return first .. rest
-end
-
---- 按 field number 升序提取值构造位置参数数组
--- @param decoded table pb.decode 返回的 table（field name 为 key）
--- @param request_type string protobuf message 类型名
--- @return params table 位置参数数组 { [1]=v1, [2]=v2, ... }
-function _M.extract_params(decoded, request_type)
-    decoded = decoded or {}
-
-    -- 从缓存获取按 field number 升序排列的字段名列表
-    local sorted_names = _sorted_fields_cache[request_type]
-    if not sorted_names then
-        local fields = {}
-        for name, number in pb.fields(request_type) do
-            table.insert(fields, { name = name, number = number })
-        end
-        table.sort(fields, function(a, b) return a.number < b.number end)
-        sorted_names = {}
-        for i, f in ipairs(fields) do
-            sorted_names[i] = f.name
-        end
-        _sorted_fields_cache[request_type] = sorted_names
-    end
-
-    -- 按缓存的字段顺序提取值
-    local params = {}
-    for _, name in ipairs(sorted_names) do
-        local val = decoded[name]
-        if val ~= nil then
-            table.insert(params, val)
-        end
-    end
-    return params
-end
-
---- 将 YAR retval 映射为 protobuf Response message table
--- @param retval any YAR 返回值
--- @param response_type string protobuf message 类型名
--- @return table 可直接 pb.encode 的 message table
-function _M.map_response(retval, response_type)
-    -- nil 返回值 → 空消息（google.protobuf.Empty 或无字段消息）
-    if retval == nil then
-        return {}
-    end
-
-    -- 标量返回值 → 包装为 { result = retval }
-    if type(retval) ~= "table" then
-        return { result = retval }
-    end
-
-    -- 索引数组（retval[1] ~= nil）→ 优先用 field 1（仅当 repeated），其次用第一个 repeated 字段
-    if retval[1] ~= nil then
-        -- 从缓存获取 field 1 名和首个 repeated 字段名
-        local cached = _idx_fields_cache[response_type]
-        if not cached then
-            local f1_name
-            local f1_repeated
-            local first_rep
-            for name, number, _, _, label in pb.fields(response_type) do
-                if number == 1 then
-                    f1_name = name
-                    f1_repeated = (label == "repeated")
-                end
-                if not first_rep and label == "repeated" then
-                    first_rep = name
-                end
-            end
-            -- field 1 仅当为 repeated 时才优先使用，否则用首个 repeated 字段
-            cached = { key = (f1_repeated and f1_name) or first_rep }
-            _idx_fields_cache[response_type] = cached
-        end
-        local key = cached.key
-        if key then
-            return { [key] = retval }
-        end
-        -- 兜底：直接返回
-        return retval
-    end
-
-    -- 关联数组 → 直接作为 message table
-    return retval
-end
-
 --- 完整管线：pb.decode → extract_params → client:call → map_response → pb.encode
 -- @param service string gRPC Service 名
 -- @param method string gRPC Method 名
@@ -221,16 +111,8 @@ end
 -- @return status number|nil gRPC 状态码（失败时）
 -- @return err string|nil 错误信息（失败时）
 function _M.handle(service, method, payload, service_config)
-    -- 从缓存获取类型名（避免每请求字符串拼接）
-    local cache_key = service .. "/" .. method
-    local types = _type_cache[cache_key]
-    if not types then
-        types = {
-            request  = service .. "_" .. method .. "Request",
-            response = service .. "_" .. method .. "Response",
-        }
-        _type_cache[cache_key] = types
-    end
+    -- 从 converter 获取类型名（带缓存）
+    local types = converter.get_type_names(service, method)
     local request_type  = types.request
     local response_type = types.response
 
@@ -241,7 +123,7 @@ function _M.handle(service, method, payload, service_config)
     end
 
     -- 2. 提取位置参数
-    local params = _M.extract_params(decoded, request_type)
+    local params = converter.extract_params(decoded, request_type)
 
     -- 3. 获取（缓存的）YAR client 并调用
     -- client:call() 返回 nil, err（结构化 Error 对象），不抛异常
@@ -251,7 +133,7 @@ function _M.handle(service, method, payload, service_config)
         return nil, errors.INTERNAL, cerr
     end
 
-    local yar_method = _M.method_to_yar(method)
+    local yar_method = converter.method_to_yar(method)
     local result, err = client:call(yar_method, params)
     if err then
         local status, msg = errors.map_yar_error(err)
@@ -259,7 +141,7 @@ function _M.handle(service, method, payload, service_config)
     end
 
     -- 4. 映射响应值
-    local response_table = _M.map_response(result, response_type)
+    local response_table = converter.map_response(result, response_type)
 
     -- 5. protobuf encode 响应
     local ok2, response_payload = pcall(pb.encode, response_type, response_table)

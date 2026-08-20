@@ -103,44 +103,63 @@ gRPC 客户端调用 `/{Service}/{Method}`（如 `/Calculator/Add`），代理�
 lib/resty/grpc_yar_proxy/
 ├── init.lua             -- 入口模块：setup() 和 serve() 和 log_phase()
 ├── codec.lua            -- gRPC 帧编解码（5 字节帧头 + payload）
-├── bridge.lua           -- gRPC ↔ YAR 协议转换核心
+├── converter.lua        -- 纯协议转换层（零 ngx.* 依赖，可独立测试）
+├── bridge.lua           -- 正向桥接：gRPC → YAR（调用 converter + 可观测性 hooks）
+├── reverse_bridge.lua   -- 反向桥接：YAR → gRPC（占位，依赖注入传输层）
 ├── errors.lua           -- gRPC 状态码映射与响应
 ├── deadline.lua         -- gRPC deadline 解析与前后检查
 ├── circuit_breaker.lua  -- 熔断器（3 态状态机，跨 worker）
-└── observability.lua    -- 可观测性（请求 ID、访问日志、指标）
+├── trace.lua            -- 请求 ID 管理 + hooks 组合（compose）+ 错误状态
+├── access_log.lua       -- 结构化 JSON 访问日志 + 延迟日志输出
+└── metrics.lua          -- 指标记录 + Prometheus 导出
 ```
 
 ## 可观测性 API
 
-`observability.lua` 提供以下公开函数和 hooks 工厂：
+可观测性拆分为 3 个模块：`trace.lua`（基础模块）、`access_log.lua`、`metrics.lua`。
+
+### trace.lua
 
 | 函数 / 工厂 | 说明 |
 |---|---|
 | `get_request_id()` | 获取当前请求 ID（从 `ngx.ctx` 读取或生成） |
 | `ensure_request_id(header_name?)` | 从 header 提取或生成请求 ID，存入 `ngx.ctx` |
 | `trace_middleware(opts?)` | hooks 工厂：生成/提取请求 ID |
-| `access_logger(opts?)` | hooks 工厂：结构化 JSON 访问日志（支持 `defer=true` 延迟模式） |
-| `metrics_recorder(opts?)` | hooks 工厂：ngx.shared.DICT 计数器 + 延迟直方图 + `export()` |
 | `compose(...)` | 组合多个 hooks，每个 hook 独立 pcall 隔离 |
+| `error_status(err_obj?)` | 从 Error 对象提取错误状态字符串 |
+
+### access_log.lua
+
+| 函数 / 工厂 | 说明 |
+|---|---|
+| `access_logger(opts?)` | hooks 工厂：结构化 JSON 访问日志（支持 `defer=true` 延迟模式） |
 | `flush_logs(opts?)` | 在 `log_by_lua` 阶段输出延迟的访问日志 |
+
+### metrics.lua
+
+| 函数 / 工厂 | 说明 |
+|---|---|
+| `metrics_recorder(opts?)` | hooks 工厂：ngx.shared.DICT 计数器 + 延迟直方图 + `export()` |
 
 **Deferred 日志模式** — 将日志 I/O 移出响应热路径：
 
 ```nginx
 init_by_lua_block {
-    local obs = require("resty.grpc_yar_proxy.observability")
+    local trace = require("resty.grpc_yar_proxy.trace")
+    local access_log = require("resty.grpc_yar_proxy.access_log")
+    local metrics = require("resty.grpc_yar_proxy.metrics")
     -- 使用 defer=true，on_response 仅存储 entry 到 ngx.ctx
-    local hooks = obs.compose(
-        obs.trace_middleware(),
-        obs.access_logger({ defer = true }),
-        obs.metrics_recorder()
+    local hooks = trace.compose(
+        trace.trace_middleware(),
+        access_log.access_logger({ defer = true }),
+        metrics.metrics_recorder()
     )
     -- hooks 注入到 bridge.lua 的 YAR Client 中...
 }
 
 # log_by_lua 阶段调用 flush_logs() 输出延迟日志
 log_by_lua_block {
-    require("resty.grpc_yar_proxy.observability").flush_logs()
+    require("resty.grpc_yar_proxy.access_log").flush_logs()
 }
 ```
 
@@ -149,8 +168,8 @@ log_by_lua_block {
 ```nginx
 location /metrics {
     content_by_lua_block {
-        local obs = require("resty.grpc_yar_proxy.observability")
-        local hooks = obs.metrics_recorder()
+        local metrics = require("resty.grpc_yar_proxy.metrics")
+        local hooks = metrics.metrics_recorder()
         ngx.header["content-type"] = "text/plain"
         ngx.say(hooks.export())
     }

@@ -15,10 +15,12 @@ local pb        = require("pb")
 local Yar       = require("yar")
 local codec     = require("resty.grpc_yar_proxy.codec")
 local bridge    = require("resty.grpc_yar_proxy.bridge")
+local converter = require("resty.grpc_yar_proxy.converter")
 local errors    = require("resty.grpc_yar_proxy.errors")
 local deadline  = require("resty.grpc_yar_proxy.deadline")
 local cb        = require("resty.grpc_yar_proxy.circuit_breaker")
-local observability = require("resty.grpc_yar_proxy.observability")
+local trace     = require("resty.grpc_yar_proxy.trace")
+local access_log = require("resty.grpc_yar_proxy.access_log")
 
 local _M = {}
 _M.VERSION = "0.2.0"
@@ -203,8 +205,8 @@ function _M.serve()  --luacheck: no unused args
     ngx.ctx.request_start = request_start
     ngx.ctx.grpc_deadline_ms = deadline_ms
 
-    -- 0a. 生成/提取请求 ID（委托给 observability 模块，消除内联重复）
-    observability.ensure_request_id("x-request-id")
+    -- 0a. 生成/提取请求 ID（委托给 trace 模块，消除内联重复）
+    trace.ensure_request_id("x-request-id")
 
     -- 0b. 前置 deadline 检查
     if deadline.check_front(deadline_ms, request_start) then
@@ -253,7 +255,7 @@ function _M.serve()  --luacheck: no unused args
 
     -- 5. 解析 gRPC path
     local path = ngx.var.uri
-    local service, method, perr = bridge.parse_grpc_path(path)
+    local service, method, perr = converter.parse_grpc_path(path)
     if not service then
         ngx.ctx.grpc_status = errors.INVALID_ARGUMENT
         errors.send_error(errors.INVALID_ARGUMENT, perr)
@@ -311,7 +313,7 @@ end
 
 --- 异步日志阶段（在 log_by_lua_block 中调用）
 -- 从 ngx.ctx 读取请求元数据和 YAR 调用元数据，输出结构化日志行
--- 同时调用 observability.flush_logs() 输出延迟的访问日志（deferred 模式）
+-- 同时调用 access_log.flush_logs() 输出延迟的访问日志（deferred 模式）
 -- 所有字段做 nil 兜底，确保 serve() 未执行时不报错
 function _M.log_phase()
     local ctx = ngx.ctx
@@ -331,7 +333,7 @@ function _M.log_phase()
     ngx.log(ngx.INFO, line)
 
     -- 输出延迟的访问日志（deferred 模式，无 entry 时静默返回）
-    observability.flush_logs()
+    access_log.flush_logs()
 end
 
 return _M
