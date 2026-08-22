@@ -5,7 +5,7 @@
 -- 从 observability.lua 拆出：
 --   gen_request_id()              — 多熵源混合生成 request ID
 --   get_request_id_from_header()  — 从 HTTP header 提取或生成 ID
---   get_or_create_request_id()    — 从 ngx.ctx 读取或创建 ID
+--   get_or_create_request_id()    — 从 platform.ctx 读取或创建 ID
 --   get_request_id()              — 公开 API：获取当前请求 ID
 --   ensure_request_id()           — 公开 API：确保 ID 存在（serve 阶段调用）
 --   trace_middleware()             — hooks 工厂：生成/提取请求 ID
@@ -15,7 +15,7 @@
 -- 共享 ctx key（log 和 metrics 共用）：
 --   CTX_START_TIME — 请求开始时间戳
 
-local ngx = ngx
+local platform = require("resty.grpc_yar_proxy.platform")
 local pcall = pcall
 local type = type
 local pairs = pairs
@@ -32,13 +32,13 @@ _M.CTX_START_TIME = "grpc_yar_obs_start_time"
 local request_seq = 0
 
 --- 生成 request ID（多熵源混合，per-worker 唯一）
--- 熵源：ngx.time（秒级时间）+ ngx.worker.pid（进程区分）+ 计数器（进程内单调递增）
+-- 熵源：platform.time（秒级时间）+ platform.worker_pid（进程区分）+ 计数器（进程内单调递增）
 -- 对标 lua-yar default_gen_id 设计，但不调用 math.randomseed（库不越权播种）
 -- @return string request ID（16 进制字符串，便于日志阅读）
 local function gen_request_id()
     request_seq = request_seq + 1
-    local t = ngx.time() or 0
-    local pid = ngx.worker.pid() or 0
+    local t = platform.time() or 0
+    local pid = platform.worker_pid() or 0
     local id = (t * 1000000 + pid * 10000 + request_seq) % 0x100000000
     return string.format("%08x", id)
 end
@@ -50,17 +50,17 @@ end
 local function get_request_id_from_header(header_name)
     header_name = header_name or "x-request-id"
     local var_name = "http_" .. header_name:gsub("-", "_")
-    local rid = ngx.var[var_name]
+    local rid = platform.var[var_name]
     if rid and rid ~= "" then
         return rid
     end
     return gen_request_id()
 end
 
---- 获取或创建 request ID（从 ngx.ctx 读取，不存在则生成并注入）
+--- 获取或创建 request ID（从 platform.ctx 读取，不存在则生成并注入）
 -- @return string request ID
 local function get_or_create_request_id()
-    local ctx = ngx.ctx
+    local ctx = platform.ctx
     if ctx.request_id then
         return ctx.request_id
     end
@@ -82,7 +82,7 @@ function _M.error_status(err_obj)
 end
 
 --- 获取当前请求的 request ID（公开 API）
--- 供业务代码或日志格式化使用，从 ngx.ctx 读取或生成
+-- 供业务代码或日志格式化使用，从 platform.ctx 读取或生成
 ---@return string request ID
 function _M.get_request_id()
     return get_or_create_request_id()
@@ -93,7 +93,7 @@ end
 ---@param header_name? string 请求 ID header 名（默认 "x-request-id"）
 ---@return string request ID
 function _M.ensure_request_id(header_name)
-    local ctx = ngx.ctx
+    local ctx = platform.ctx
     if not ctx.request_id then
         ctx.request_id = get_request_id_from_header(header_name)
     end
@@ -101,7 +101,7 @@ function _M.ensure_request_id(header_name)
 end
 
 --- 创建 trace 中间件 hooks 工厂
--- 生成/提取请求 ID，存入 ngx.ctx.request_id
+-- 生成/提取请求 ID，存入 platform.ctx.request_id
 ---@param opts? table { header_name = "x-request-id", id_generator = fun():string }
 ---@return table hooks { on_request = fun(method:string, params:any) }
 function _M.trace_middleware(opts)
@@ -111,7 +111,7 @@ function _M.trace_middleware(opts)
 
     return {
         on_request = function(_method, _params)
-            local ctx = ngx.ctx
+            local ctx = platform.ctx
             if not ctx.request_id then
                 if id_gen then
                     ctx.request_id = id_gen()
@@ -150,7 +150,7 @@ function _M.compose(...)
                 if fn then
                     local ok, err = pcall(fn, method, params)
                     if not ok then
-                        ngx.log(ngx.WARN, "[grpc_yar_proxy] on_request hook "
+                        platform.log(platform.LOG_WARN, "[grpc_yar_proxy] on_request hook "
                             .. i .. " error: " .. tostring(err))
                     end
                 end
@@ -162,7 +162,7 @@ function _M.compose(...)
                 if fn then
                     local ok, err = pcall(fn, method, retval, err_obj)
                     if not ok then
-                        ngx.log(ngx.WARN, "[grpc_yar_proxy] on_response hook "
+                        platform.log(platform.LOG_WARN, "[grpc_yar_proxy] on_response hook "
                             .. i .. " error: " .. tostring(err))
                     end
                 end

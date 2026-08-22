@@ -8,7 +8,7 @@
 -- 常量：
 --   LATENCY_BUCKETS — 延迟直方图桶边界（毫秒），对标 Prometheus histogram 默认 bucket
 
-local ngx = ngx
+local platform = require("resty.grpc_yar_proxy.platform")
 local pcall = pcall
 local type = type
 local ipairs = ipairs
@@ -27,7 +27,7 @@ local _M = {}
 local LATENCY_BUCKETS = { 1, 5, 10, 50, 100, 500, 1000, 5000 }
 
 --- 创建指标记录 hooks 工厂
--- 在 on_response 中记录请求计数和延迟直方图到 ngx.shared.DICT
+-- 在 on_response 中记录请求计数和延迟直方图到 platform.shared_dict()
 -- 支持通过 export() 导出 Prometheus exposition format
 -- @param opts table|nil { dict_name = "grpc_yar_proxy_metrics", prefix = "grpc_yar" }
 -- @return table hooks { on_request, on_response, export }
@@ -40,7 +40,7 @@ function _M.metrics_recorder(opts)
 
     local function get_dict()
         local ok, dict = pcall(function()
-            return ngx.shared[dict_name]
+            return platform.shared_dict(dict_name)
         end)
         if ok and dict then
             return dict
@@ -50,7 +50,7 @@ function _M.metrics_recorder(opts)
 
     local dict = get_dict()
     if not dict then
-        ngx.log(ngx.WARN, "[grpc_yar_proxy metrics] shared dict '" .. dict_name
+        platform.log(platform.LOG_WARN, "[grpc_yar_proxy metrics] shared dict '" .. dict_name
             .. "' not found, metrics disabled. Add 'lua_shared_dict " .. dict_name
             .. " 1m;' to nginx.conf")
         return {
@@ -81,15 +81,15 @@ function _M.metrics_recorder(opts)
     end
 
     local function record(method, _retval, err_obj)
-        local start = ngx.ctx[CTX_START_TIME] or ngx.now()
-        local duration_ms = (ngx.now() - start) * 1000
+        local start = platform.ctx[CTX_START_TIME] or platform.now()
+        local duration_ms = (platform.now() - start) * 1000
         local status = error_status(err_obj)
-        local service = ngx.ctx.grpc_service or "unknown"
+        local service = platform.ctx.grpc_service or "unknown"
 
         -- 计数器（incr，原子操作）
         local _, cerr = dict:incr(counter_key(service, method, "total"), 1, 0)
         if cerr then
-            ngx.log(ngx.WARN, "[grpc_yar_proxy metrics] incr error: " .. tostring(cerr))
+            platform.log(platform.LOG_WARN, "[grpc_yar_proxy metrics] incr error: " .. tostring(cerr))
         end
         dict:incr(counter_key(service, method, status), 1, 0)
 
@@ -116,7 +116,7 @@ function _M.metrics_recorder(opts)
 
     return {
         on_request = function(_method, _params)
-            ngx.ctx[CTX_START_TIME] = ngx.now()
+            platform.ctx[CTX_START_TIME] = platform.now()
         end,
         on_response = function(method, retval, err_obj)
             record(method, retval, err_obj)

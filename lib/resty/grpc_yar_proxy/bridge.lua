@@ -13,6 +13,7 @@ local converter = require("resty.grpc_yar_proxy.converter")
 local trace     = require("resty.grpc_yar_proxy.trace")
 local log = require("resty.grpc_yar_proxy.log")
 local metrics   = require("resty.grpc_yar_proxy.metrics")
+local platform  = require("resty.grpc_yar_proxy.platform")
 
 local _M = {}
 
@@ -53,11 +54,11 @@ local function get_client(service, service_config)
         opts.persistent = true
     end
 
-    -- 注入 hooks：收集 YAR 调用元数据到 ngx.ctx（延迟、错误分类）
+    -- 注入 hooks：收集 YAR 调用元数据到 platform.ctx（延迟、错误分类）
     -- 同时集成熔断器记录和可观测性 hooks
     -- hooks 签名：on_request(method, params) / on_response(method, retval, err_obj)
     -- lua-yar 的 run_hook() 内部 pcall 保护，hook 异常不影响主流程
-    -- hooks 引用 ngx.ctx 全局 table，per-request 自动隔离，persistent 复用安全
+    -- hooks 引用 platform.ctx（proxy 到 ngx.ctx），per-request 自动隔离，persistent 复用安全
     local url = service_config.url
     local obs_hooks = trace.compose(
         trace.trace_middleware(),
@@ -67,22 +68,22 @@ local function get_client(service, service_config)
 
     opts.hooks = {
         on_request = function(method, params)
-            ngx.ctx.yar_call_start = ngx.now()
-            ngx.ctx.yar_method = method
+            platform.ctx.yar_call_start = platform.now()
+            platform.ctx.yar_method = method
             -- 可观测性 hooks on_request
             if obs_hooks.on_request then
                 pcall(obs_hooks.on_request, method, params)
             end
         end,
         on_response = function(method, retval, err_obj)
-            local end_time = ngx.now()
-            ngx.ctx.yar_call_latency = end_time - (ngx.ctx.yar_call_start or end_time)
+            local end_time = platform.now()
+            platform.ctx.yar_call_latency = end_time - (platform.ctx.yar_call_start or end_time)
             if err_obj then
-                ngx.ctx.yar_error_code = err_obj.code or "UNKNOWN"
+                platform.ctx.yar_error_code = err_obj.code or "UNKNOWN"
                 -- 熔断器记录失败（仅传输层/超时错误计入）
                 cb.record_failure(url, err_obj.code)
             else
-                ngx.ctx.yar_error_code = nil
+                platform.ctx.yar_error_code = nil
                 -- 熔断器记录成功
                 cb.record_success(url)
             end

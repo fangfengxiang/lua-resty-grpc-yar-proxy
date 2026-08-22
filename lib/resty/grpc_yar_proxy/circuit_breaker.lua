@@ -7,13 +7,13 @@
 --   OPEN:       拒绝所有请求，等待冷却时间后转 HALF_OPEN
 --   HALF_OPEN:  放行有限探测请求，成功 → CLOSED，失败 → OPEN
 --
--- 跨 worker 状态：使用 ngx.shared.DICT 存储状态（生产环境）
+-- 跨 worker 状态：使用 platform.shared_dict() 存储状态（生产环境）
 -- 无 shared dict 时回退到模块级 table（测试环境/降级模式）
 --
 -- hooks 驱动：on_response 回调记录成功/失败，不侵入 bridge.lua
 -- 仅传输层错误（TRANSPORT/TIMEOUT）触发失败计数，协议错误是客户端 bug 不计入
 
-local ngx = ngx
+local platform = require("resty.grpc_yar_proxy.platform")
 local Yar = require("yar")
 
 local _M = {}
@@ -37,8 +37,8 @@ _M._failure_threshold = DEFAULT_FAILURE_THRESHOLD
 _M._cooldown_ms       = DEFAULT_COOLDOWN_MS
 _M._half_open_max     = DEFAULT_HALF_OPEN_MAX
 
--- ngx.shared.DICT 名称
--- ngx.shared.DICT name for cross-worker state
+-- platform.shared_dict() 名称
+-- platform.shared_dict() name for cross-worker state
 local _dict_name = "grpc_yar_proxy_cb"
 
 -- 模块级 fallback table（无 shared dict 时使用）
@@ -65,7 +65,7 @@ end
 -- Get shared dict (lazy, may not exist in test env)
 local function get_dict()
     local ok, dict = pcall(function()
-        return ngx.shared[_dict_name]
+        return platform.shared_dict(_dict_name)
     end)
     if ok and dict then
         return dict
@@ -152,7 +152,7 @@ function _M.allow(url)
     elseif state == _M.OPEN then
         -- 检查冷却时间是否已过
         local last_fail = store_get(url, last_fail_key) or 0
-        local now = ngx.now() * 1000
+        local now = platform.now() * 1000
         if now - last_fail >= _M._cooldown_ms then
             -- 转入 HALF_OPEN，放行探测请求
             store_set(url, state_key, _M.HALF_OPEN)
@@ -207,7 +207,7 @@ function _M.record_failure(url, error_code)
         -- 探测失败，回到 OPEN，清空探测计数
         store_set(url, state_key, _M.OPEN)
         store_set(url, probe_key, 0)
-        store_set(url, last_fail_key, ngx.now() * 1000)
+        store_set(url, last_fail_key, platform.now() * 1000)
         return
     end
 
@@ -215,7 +215,7 @@ function _M.record_failure(url, error_code)
         local count = store_incr(url, count_key, 1, 0)
         if count >= _M._failure_threshold then
             store_set(url, state_key, _M.OPEN)
-            store_set(url, last_fail_key, ngx.now() * 1000)
+            store_set(url, last_fail_key, platform.now() * 1000)
         end
     end
 end

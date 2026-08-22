@@ -21,6 +21,7 @@ local deadline  = require("resty.grpc_yar_proxy.deadline")
 local cb        = require("resty.grpc_yar_proxy.circuit_breaker")
 local trace     = require("resty.grpc_yar_proxy.trace")
 local log = require("resty.grpc_yar_proxy.log")
+local platform  = require("resty.grpc_yar_proxy.platform")
 
 local _M = {}
 _M.VERSION = "0.2.0"
@@ -31,13 +32,13 @@ local _services    = {}  -- 服务名 → { url=, options= }
 local _yar_options = {}
 local _svc_cache   = {}  -- 解析后的服务配置缓存（service name → {url, options}）
 
--- lua-yar Log 级别 → ngx.log 常量映射
+-- lua-yar Log 级别 → platform 日志常量映射
 -- lua-yar 有 DEBUG(1)/INFO(2)/WARN(3)/ERROR(4)，nginx 无 DEBUG 级别，映射到 INFO
 local _NGX_LEVEL_MAP = {
-    [Yar.Log.DEBUG] = ngx.INFO,
-    [Yar.Log.INFO]  = ngx.INFO,
-    [Yar.Log.WARN]  = ngx.WARN,
-    [Yar.Log.ERROR] = ngx.ERR,
+    [Yar.Log.DEBUG] = platform.LOG_INFO,
+    [Yar.Log.INFO]  = platform.LOG_INFO,
+    [Yar.Log.WARN]  = platform.LOG_WARN,
+    [Yar.Log.ERROR] = platform.LOG_ERR,
 }
 
 --- 递归合并：table key 递归合并，非 table key 直接覆盖
@@ -80,6 +81,37 @@ local function load_pb_file(file)
         return false, "failed to load " .. file .. ": " .. tostring(perr)
     end
     return true
+end
+
+-- HTTP 响应函数（Category 2：与 HTTP 框架绑定，从 errors.lua 移入入口层）
+-- HTTP response functions (Category 2: HTTP framework bound, moved from errors.lua to entry layer)
+
+--- 发送 gRPC 错误响应
+-- 设置 grpc-status 和 grpc-message 头，不输出 payload
+-- gRPC 错误响应是 trailers-only 响应（无 body），grpc-status 放在 headers 中
+---@param status integer gRPC 状态码
+---@param message? string grpc-message
+local function send_error(status, message)
+    ngx.header["content-type"] = "application/grpc"
+    ngx.header["grpc-status"]  = tostring(status)
+    ngx.header["grpc-message"] = message or ""
+    ngx.status = ngx.HTTP_OK  -- gRPC 始终使用 HTTP 200，错误在 trailers 中
+    return ngx.exit(ngx.HTTP_OK)
+end
+
+--- 发送 gRPC 成功响应
+-- 设置 content-type header，输出 gRPC 帧，grpc-status:0 作为 trailer
+-- 注意：OpenResty ngx.header 在 ngx.print 后无法修改（headers 已提交），
+-- 因此 grpc-status 放在 headers 中（gRPC 客户端兼容此写法）。
+-- 严格的 trailer 实现需要 nginx HTTP/2 模块直接支持，OpenResty API 暂不支持。
+---@param frame string 完整的 gRPC 帧（已由 codec.encode_frame 编码）
+local function send_ok(frame)
+    ngx.header["content-type"] = "application/grpc"
+    ngx.header["grpc-status"]  = "0"
+    ngx.header["grpc-message"] = ""
+    ngx.status = ngx.HTTP_OK
+    ngx.print(frame)
+    return ngx.exit(ngx.HTTP_OK)
 end
 
 --- 初始化：加载 .pb 文件、配置 services、注入 cosocket
@@ -155,9 +187,9 @@ function _M.setup(opts)
     -- 3. 注入 cosocket（出向 YAR 调用走 OpenResty 非阻塞 I/O）
     Yar.Client.set_socket(ngx.socket)
 
-    -- 4. 注入 Log writer：将 lua-yar 内部日志路由到 ngx.log
+    -- 4. 注入 Log writer：将 lua-yar 内部日志路由到 platform.log
     Yar.Log.set_writer(function(lvl, msg)
-        ngx.log(_NGX_LEVEL_MAP[lvl] or ngx.ERR, "yar: " .. msg)
+        platform.log(_NGX_LEVEL_MAP[lvl] or platform.LOG_ERR, "yar: " .. msg)
     end)
 
     -- 5. 设置日志级别（默认 WARN，与 lua-yar 自身默认一致）
@@ -200,18 +232,18 @@ end
 -- 读取请求体 → 解析 gRPC 帧 → 检测流式 → 解析 path → 查 services → bridge.handle → 输出响应
 function _M.serve()  --luacheck: no unused args
     -- 0. 记录请求开始时间，解析 deadline
-    local request_start = ngx.now()
-    local deadline_ms = deadline.parse_timeout(ngx.var.http_grpc_timeout)
-    ngx.ctx.request_start = request_start
-    ngx.ctx.grpc_deadline_ms = deadline_ms
+    local request_start = platform.now()
+    local deadline_ms = deadline.parse_timeout(platform.var.http_grpc_timeout)
+    platform.ctx.request_start = request_start
+    platform.ctx.grpc_deadline_ms = deadline_ms
 
     -- 0a. 生成/提取请求 ID（委托给 trace 模块，消除内联重复）
     trace.ensure_request_id("x-request-id")
 
     -- 0b. 前置 deadline 检查
     if deadline.check_front(deadline_ms, request_start) then
-        ngx.ctx.grpc_status = errors.DEADLINE_EXCEEDED
-        errors.send_error(errors.DEADLINE_EXCEEDED, "deadline already exceeded")
+        platform.ctx.grpc_status = errors.DEADLINE_EXCEEDED
+        send_error(errors.DEADLINE_EXCEEDED, "deadline already exceeded")
         return
     end
 
@@ -222,7 +254,7 @@ function _M.serve()  --luacheck: no unused args
         -- 请求体可能被写入临时文件（body spill）
         local file = ngx.req.get_body_file()
         if file then
-            ngx.log(ngx.WARN, "request body spilled to disk: " .. file)
+            platform.log(platform.LOG_WARN, "request body spilled to disk: " .. file)
             local f = io.open(file, "rb")
             if f then
                 body = f:read("*a")
@@ -234,50 +266,50 @@ function _M.serve()  --luacheck: no unused args
     -- 2. 解析 gRPC 帧
     local flag, payload, frame_size, err = codec.decode_frame(body)
     if not flag then
-        ngx.ctx.grpc_status = errors.INVALID_ARGUMENT
-        errors.send_error(errors.INVALID_ARGUMENT, err)
+        platform.ctx.grpc_status = errors.INVALID_ARGUMENT
+        send_error(errors.INVALID_ARGUMENT, err)
         return
     end
 
     -- 3. 压缩标志检查
     if flag ~= codec.COMPRESSION_NONE then
-        ngx.ctx.grpc_status = errors.UNIMPLEMENTED
-        errors.send_error(errors.UNIMPLEMENTED, "compression not supported")
+        platform.ctx.grpc_status = errors.UNIMPLEMENTED
+        send_error(errors.UNIMPLEMENTED, "compression not supported")
         return
     end
 
     -- 4. 流式模式检测（多帧 = streaming）
     if codec.has_multiple_frames(body, frame_size) then
-        ngx.ctx.grpc_status = errors.UNIMPLEMENTED
-        errors.send_error(errors.UNIMPLEMENTED, "streaming mode not supported")
+        platform.ctx.grpc_status = errors.UNIMPLEMENTED
+        send_error(errors.UNIMPLEMENTED, "streaming mode not supported")
         return
     end
 
     -- 5. 解析 gRPC path
-    local path = ngx.var.uri
+    local path = platform.var.uri
     local service, method, perr = converter.parse_grpc_path(path)
     if not service then
-        ngx.ctx.grpc_status = errors.INVALID_ARGUMENT
-        errors.send_error(errors.INVALID_ARGUMENT, perr)
+        platform.ctx.grpc_status = errors.INVALID_ARGUMENT
+        send_error(errors.INVALID_ARGUMENT, perr)
         return
     end
 
-    -- 写入请求元数据到 ngx.ctx（供 log_by_lua 阶段读取）
-    ngx.ctx.grpc_service = service
-    ngx.ctx.grpc_method = method
+    -- 写入请求元数据到 platform.ctx（供 log_by_lua 阶段读取）
+    platform.ctx.grpc_service = service
+    platform.ctx.grpc_method = method
 
     -- 6. 查 services
     local url, svc_opts = resolve_service_config(service)
     if not url then
-        ngx.ctx.grpc_status = errors.NOT_FOUND
-        errors.send_error(errors.NOT_FOUND, "service not found: " .. service)
+        platform.ctx.grpc_status = errors.NOT_FOUND
+        send_error(errors.NOT_FOUND, "service not found: " .. service)
         return
     end
 
     -- 6a. 熔断器检查
     if not cb.allow(url) then
-        ngx.ctx.grpc_status = errors.UNAVAILABLE
-        errors.send_error(errors.UNAVAILABLE, "circuit breaker open: " .. url)
+        platform.ctx.grpc_status = errors.UNAVAILABLE
+        send_error(errors.UNAVAILABLE, "circuit breaker open: " .. url)
         return
     end
 
@@ -287,36 +319,36 @@ function _M.serve()  --luacheck: no unused args
         options = svc_opts,
     })
     if not ok then
-        ngx.ctx.grpc_status = errors.INTERNAL
-        errors.send_error(errors.INTERNAL, "uncaught error: " .. tostring(response_payload))
+        platform.ctx.grpc_status = errors.INTERNAL
+        send_error(errors.INTERNAL, "uncaught error: " .. tostring(response_payload))
         return
     end
 
     if not response_payload then
-        ngx.ctx.grpc_status = status or errors.INTERNAL
-        errors.send_error(status, errmsg)
+        platform.ctx.grpc_status = status or errors.INTERNAL
+        send_error(status, errmsg)
         return
     end
 
     -- 7a. 后置 deadline 检查
     if deadline.check_back(deadline_ms, request_start) then
-        ngx.ctx.grpc_status = errors.DEADLINE_EXCEEDED
-        errors.send_error(errors.DEADLINE_EXCEEDED, "deadline exceeded after call")
+        platform.ctx.grpc_status = errors.DEADLINE_EXCEEDED
+        send_error(errors.DEADLINE_EXCEEDED, "deadline exceeded after call")
         return
     end
 
     -- 8. 输出成功响应
-    ngx.ctx.grpc_status = errors.OK
+    platform.ctx.grpc_status = errors.OK
     local frame = codec.encode_frame(response_payload)
-    errors.send_ok(frame)
+    send_ok(frame)
 end
 
 --- 异步日志阶段（在 log_by_lua_block 中调用）
--- 从 ngx.ctx 读取请求元数据和 YAR 调用元数据，输出结构化日志行
+-- 从 platform.ctx 读取请求元数据和 YAR 调用元数据，输出结构化日志行
 -- 同时调用 log.flush_logs() 输出延迟的访问日志（deferred 模式）
 -- 所有字段做 nil 兜底，确保 serve() 未执行时不报错
 function _M.log_phase()
-    local ctx = ngx.ctx
+    local ctx = platform.ctx
     local service  = ctx.grpc_service or "-"
     local method   = ctx.grpc_method or "-"
     local status    = ctx.grpc_status or "-"
@@ -330,7 +362,7 @@ function _M.log_phase()
     if err_code then
         line = line .. " yar_error=" .. tostring(err_code)
     end
-    ngx.log(ngx.INFO, line)
+    platform.log(platform.LOG_INFO, line)
 
     -- 输出延迟的访问日志（deferred 模式，无 entry 时静默返回）
     log.flush_logs()
